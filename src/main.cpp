@@ -12,6 +12,9 @@ void setup() {
 }
 
 void loop() {
+  //VARIAVEL GLOBAR FOI ALTERAR?
+  //TRATAR JSON
+  
   // FALAAAAAAAAA
   //QUANDO QUISEREM EMVIAR DADOS PELO BLUETOOTH FAZ ASSIM:
   //updateBLE(message);

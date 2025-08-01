@@ -18,6 +18,14 @@ class MyCallbacks : public BLECharacteristicCallbacks {
     if (rxValue.length() > 0) {
       Serial.print("Recebido JSON:");
       Serial.println(rxValue.c_str());
+
+
+      //OPDE RECEBER
+      //1 - DADOS DE CONFIGURAÇÃO (CLASSE)
+      //2 - GET_DADOS
+      //RCVALUE CONTEM GET_DADOS? ENVIAR OS DADOS
+      //SE NÃO SÃO DADOS DE CONFIF - TRATAR O JSON
+      //CRIAR VARIAVEL GLOBAL
     }
   }
 };

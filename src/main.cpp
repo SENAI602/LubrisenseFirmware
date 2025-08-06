@@ -55,12 +55,10 @@ unsigned long ultimaSincronizacao = 0;
 
 
 // --- Variáveis Globais de Controle ---
-unsigned long intervalo = INTERVALO_PADRAO_SEGURO;
-int configVolume = 10; 
+int varConfigVolume = 10; 
 unsigned long ultimaLubrificacao = 0;
 unsigned long ultimoReenvio = 0;
 bool aguardandoAck = false;
-bool varCicloAtivo = false;
 unsigned long aguardandoAckDesde = 0;
 const unsigned long TIMEOUT_ACK = 15000;
 int lastManualButtonState = HIGH;
@@ -85,6 +83,7 @@ String varConfigSetor = "";
 String varConfigLubrificante = "";
 int varConfigTipoConfig = 0;
 int varConfigTipoIntervalo = 0;
+unsigned long varConfigIntervalo = 0;
 String varConfigUltimaConexao = "";
 
 // --- Variáveis Globais para Comunicação com BLE (Definidas aqui) ---
@@ -107,6 +106,7 @@ bool sincronizarViaNTP();
 void salvarEstadoCiclo(bool cicloStartado, const String& horarioStartado, const String& ultimaLubrificacao);
 String formatarTimestamp(const DateTime& dt);
 void carregarEstadoCiclo();
+DateTime stringParaDateTime(const String& timestampStr);
 
 void setup() {
   delay(500);
@@ -163,9 +163,11 @@ void setup() {
 
 
 void loop() {
-  //--------------------------------------------------------------------------------------------  
-  //--------------------------------------------------------------------------------------------  
-  //--------------------------------------------------------------------------------------------  
+  //-----------------------------------------------------------------------------------------------------------------------------------  
+  // Detecta o acionamento do botão manual (pressionado), garantindo que seja uma transição válida (HIGH → LOW) 
+  // e respeitando um intervalo mínimo entre acionamentos, para então registrar o início de um ciclo manual com timestamp 
+  // e ativar a variável de controle.
+  //-----------------------------------------------------------------------------------------------------------------------------------  
   // Lê o estado atual do botão Manual
   int estadoAtualBtnManual = digitalRead(BTN_MANUAL);
   // Verifica se o botão FOI pressionado (transição de HIGH para LOW)
@@ -174,22 +176,55 @@ void loop() {
     ultimoAcionamentoBotao1 = millis(); // Atualiza o tempo do último acionamento
     String timestampAtual = formatarTimestamp(rtc.now());
     salvarEstadoCiclo(true,timestampAtual,timestampAtual);
-    varCicloAtivo = true;
   }
   // Atualiza o estado anterior para a próxima verificação no loop
   lastBtnManualState = estadoAtualBtnManual;
-  //--------------------------------------------------------------------------------------------
-  //--------------------------------------------------------------------------------------------  
-  //--------------------------------------------------------------------------------------------  
+  //----------------------------------------------------------------------------------------------------------------------------------- 
+  // Lógica do Ciclo de Lubrificação Automático
+  //-----------------------------------------------------------------------------------------------------------------------------------
+  if (varTempCicloStartado) {
+    
+    // Obtém a hora atual do RTC e Converte a string da última lubrificação para um objeto DateTime
+    DateTime agora = rtc.now();
+    DateTime ultimaLubrificacaoDT = stringParaDateTime(varTempUltimaLubrificacao);
 
+    // Converte os tempos para Unix Timestamps (um número total de segundos)
+    uint32_t agora_ts = agora.unixtime();
+    uint32_t ultima_lub_ts = ultimaLubrificacaoDT.unixtime();
+
+    // Converte o intervalo de configuração (que está em milissegundos) para segundos
+    uint32_t intervalo_s = varConfigIntervalo / 1000;
+
+    // Verifica se o tempo atual for maior ou igual ao tempo da última lubrificação + o intervalo...
+    if (agora_ts >= (ultima_lub_ts + intervalo_s)) {
+      Serial.println("\n[CICLO AUTOMÁTICO] Tempo de lubrificação atingido!");
+      registrarEvento("auto");
+      
+      //Acionamento do motor para lubrificar
+      digitalWrite(MOTOR, HIGH);
+      delay(500);
+      digitalWrite(MOTOR, LOW);
+
+      // Atualiza a variável da última lubrificação com a hora atual para reiniciar o timer
+      varTempUltimaLubrificacao = formatarTimestamp(agora);
+      
+      // Salva o novo estado no arquivo para que ele não se perca se o dispositivo reiniciar
+      salvarEstadoCiclo(true, varTempHorarioStartado, varTempUltimaLubrificacao);
+    }
+  }
+
+  //----------------------------------------------------------------------------------------------------------------------------------- 
   // Recebendo arquivo de config pelo Bluetooth
+  //-----------------------------------------------------------------------------------------------------------------------------------
   if (newDataFromBLE) {
     newDataFromBLE = false; // Reseta a flag para não processar de novo
     Serial.println("\n[BLE] Novos dados de configuração recebidos via Bluetooth!");
     salvarConfig(bleReceivedValue.c_str());
   }
 
-  // Lógica para exibir arquivos via Monitor Serial
+  //----------------------------------------------------------------------------------------------------------------------------------- 
+  // Lógica para exibir os arquivos via Monitor Serial
+  //-----------------------------------------------------------------------------------------------------------------------------------
   if (Serial.available() > 0) {
     char command = Serial.read();
     if (command == 'c' || command == 'C') {
@@ -201,7 +236,7 @@ void loop() {
     }
   }
 
-  // // 1. Lógica de Recepção de Comandos LoRa
+  // // Lógica de Recepção de Comandos LoRa
   // uint16_t senderId;
   // uint8_t receivedCommand;
   // uint8_t payload[MAX_PAYLOAD_SIZE];
@@ -229,36 +264,15 @@ void loop() {
   //       break;
   //   }
   // }
-
-  // // 2. Lógica de Registro Automático por tempo
-  // if (millis() - ultimaLubrificacao >= intervalo) {
-  //   Serial.println("\n[EVENTO] Intervalo de tempo atingido. Registrando (auto)...");
-  //   digitalWrite(DIGITAL_OUT, HIGH);
-  //   delay(500); // Este delay é curto e aceitável para acionar algo físico
-  //   digitalWrite(DIGITAL_OUT, LOW);
-  //   registrarEvento("auto");
-  //   ultimaLubrificacao = millis();
-  // }
-
-  // // 3. Lógica de Registro Manual por botão
-  // int manualButtonState = digitalRead(MANUAL_TRIGGER_PIN);
-  // if (manualButtonState == LOW && lastManualButtonState == HIGH) {
-  //   Serial.println("\n[EVENTO] Botão manual pressionado. Registrando (manual)...");
-  //   digitalWrite(DIGITAL_OUT, HIGH);
-  //   delay(500); // Este delay é curto e aceitável
-  //   digitalWrite(DIGITAL_OUT, LOW);
-  //   registrarEvento("manual");
-  //   delay(200); // Debounce
-  // }
-  // lastManualButtonState = manualButtonState;
-
-  // // 4. Lógica de Reenvio de Eventos
+  
+  // // Lógica de Reenvio de Eventos
   // if (millis() - ultimoReenvio > intervaloEnviarGateway) {
   //   tentarReenvio();
   //   ultimoReenvio = millis();
   // }
 }
 
+// Envia o json para o master
 void sendJsonViaLoRa(const String &json, uint8_t command) {
   Serial.print("[LORA] Enviando para Gateway - CMD: 0x");
   Serial.print(command, HEX);
@@ -271,6 +285,7 @@ void sendJsonViaLoRa(const String &json, uint8_t command) {
   }
 }
 
+//Lê o arquivo config.json para puxar as informações dele para a variável
 void loadInitialConfig() {
   if (SPIFFS.exists(CONFIG_FILE)) {
     File file = SPIFFS.open(CONFIG_FILE, "r");
@@ -287,6 +302,7 @@ void loadInitialConfig() {
   }
 }
 
+// Ao receber o arquivo config.json do Bluetooth, ele salva
 void salvarConfig(const char* json) {
   Serial.println("[CONFIG] Aplicando e salvando configuração...");
   File f = SPIFFS.open(CONFIG_FILE, "w");
@@ -306,26 +322,49 @@ void salvarConfig(const char* json) {
     return;
   }
 
+  // --- CORREÇÃO APLICADA AQUI ---
+  // Primeiro, lemos todos os valores do JSON para as variáveis globais.
   if (!doc["Uuid"].isNull()) varConfigUuid = doc["Uuid"].as<String>();
   if (!doc["Tag"].isNull()) varConfigTag = doc["Tag"].as<String>();
   if (!doc["Equipamento"].isNull()) varConfigEquipamento = doc["Equipamento"].as<String>();
   if (!doc["Setor"].isNull()) varConfigSetor = doc["Setor"].as<String>();
   if (!doc["Lubrificante"].isNull()) varConfigLubrificante = doc["Lubrificante"].as<String>();
   if (!doc["TipoConfig"].isNull()) varConfigTipoConfig = doc["TipoConfig"].as<int>();
-  if (!doc["TipoIntervalo"].isNull()) varConfigTipoIntervalo = doc["TipoIntervalo"].as<int>();
-  if (!doc["Volume"].isNull()) configVolume = doc["Volume"].as<int>();
-  if (!doc["Intervalo"].isNull()) {
-    unsigned long novoIntervalo = doc["Intervalo"].as<unsigned long>() * 1000;
-    if (novoIntervalo < 1000) { // Se o intervalo for menor que 1 segundo
-      Serial.println("[AVISO] Intervalo recebido é muito baixo. Usando valor padrão para evitar travamento.");
-      intervalo = INTERVALO_PADRAO_SEGURO; // Usa o valor padrão seguro
-    } else {
-      intervalo = novoIntervalo;
-    }
-  }
+  if (!doc["TipoIntervalo"].isNull()) varConfigTipoIntervalo = doc["TipoIntervalo"].as<int>(); // Lemos o TipoIntervalo PRIMEIRO
+  if (!doc["Volume"].isNull()) varConfigVolume = doc["Volume"].as<int>();
   if (!doc["UltimaConexao"].isNull()) varConfigUltimaConexao = doc["UltimaConexao"].as<String>();
 
-  //Visualização para Debug
+  if (!doc["Intervalo"].isNull()) {
+    unsigned long valorIntervalo = doc["Intervalo"].as<unsigned long>();
+    unsigned long multiplicador = 1000; // Padrão é segundos
+
+    switch (varConfigTipoIntervalo) {
+      case 1: // Hora
+        multiplicador = 3600000UL;
+        break;
+      case 2: // Dia
+        multiplicador = 86400000UL;
+        break;
+      case 3: // Mês
+        multiplicador = 2592000000UL;
+        break;
+      default: // Segundos ou None
+        multiplicador = 1000;
+        break;
+    }
+
+    unsigned long novoIntervaloCalculado = valorIntervalo * multiplicador;
+
+    // Verificação de segurança
+    if (novoIntervaloCalculado < 10000) { // Aumentado para um mínimo de 10s
+      Serial.println("[AVISO] Intervalo calculado é muito baixo (< 10s). Usando valor padrão.");
+      varConfigIntervalo = INTERVALO_PADRAO_SEGURO;
+    } else {
+      varConfigIntervalo = novoIntervaloCalculado;
+    }
+  }
+
+  // Visualização para Debug (corrigido para mostrar a variável certa)
   Serial.println("[CONFIG] Variáveis globais carregadas:");
   Serial.print("  > Uuid: "); Serial.println(varConfigUuid);
   Serial.print("  > Tag: "); Serial.println(varConfigTag);
@@ -334,11 +373,12 @@ void salvarConfig(const char* json) {
   Serial.print("  > Lubrificante: "); Serial.println(varConfigLubrificante);
   Serial.print("  > TipoConfig: "); Serial.println(varConfigTipoConfig);
   Serial.print("  > TipoIntervalo: "); Serial.println(varConfigTipoIntervalo);
-  Serial.print("  > Volume: "); Serial.println(configVolume);
-  Serial.print("  > Intervalo: "); Serial.print(intervalo); Serial.println(" ms");
+  Serial.print("  > Volume: "); Serial.println(varConfigVolume);
+  Serial.print("  > Intervalo: "); Serial.print(varConfigIntervalo); Serial.println(" ms"); // Mostra a variável correta
   Serial.print("  > UltimaConexao: "); Serial.println(varConfigUltimaConexao);
 }
 
+// Regista a lubrificação no log.json
 void registrarEvento(const String& fonte) {
   std::vector<String> lines;
   File readFile = SPIFFS.open(LOG_FILE, "r");
@@ -355,10 +395,11 @@ void registrarEvento(const String& fonte) {
   }
 
   JsonDocument doc;
-  // doc["t"] = analogRead(TEMP_PIN);
-  doc["v"] = configVolume;
-  doc["d"] = TIMESTAMP_CONSTANT;
-  doc["f"] = fonte;
+  doc["Hora"] = formatarTimestamp(rtc.now());
+  doc["Sucesso"] = true;
+  doc["Modo"] = varConfigTipoConfig;
+  doc["Temperatura"] = random(20, 50);
+  doc["Bateria"] = random(0, 100);
   doc["e"] = false;
 
   String newLogLine;
@@ -382,6 +423,7 @@ void registrarEvento(const String& fonte) {
   Serial.println(newLogLine);
 }
 
+// Tenta enviar a uma linha que ainda não foi enviada do arquivo log.json para o master
 void tentarReenvio() {
   if (aguardandoAck && (millis() - aguardandoAckDesde < TIMEOUT_ACK)) {
     return;
@@ -414,6 +456,7 @@ void tentarReenvio() {
   file.close();
 }
 
+// Caso receba ACK do master, marca a linha como enviada
 void marcarEventoComoEnviado() {
     if (!aguardandoAck) return;
     Serial.println("[ACK] ACK recebido! Marcando evento como enviado.");
@@ -449,6 +492,7 @@ void marcarEventoComoEnviado() {
     Serial.println("[LOG] Arquivo de log atualizado.");
 }
 
+// Exibe no serial monitor as informações dos arquivos .json que estão salvos no esp
 void displayFileContent(const char* filename) {
   Serial.println();
   Serial.print("--- Conteúdo do arquivo: ");
@@ -514,6 +558,7 @@ bool sincronizarViaNTP() {
   return true;
 }
 
+// Função para salvar os parâmetros que não podem se perder caso o dispositivo seja reiniciado
 void salvarEstadoCiclo(bool cicloStartado, const String& horarioStartado, const String& ultimaLubrificacao) {
   // 1. Cria um objeto JSON na memória.
   JsonDocument doc;
@@ -545,7 +590,7 @@ void salvarEstadoCiclo(bool cicloStartado, const String& horarioStartado, const 
   file.close();
 }
 
-
+// Carrega os valores do arquivo local para as variáveis do programa
 void carregarEstadoCiclo() {
   if (SPIFFS.exists(TEMP_FILE)) {
     File file = SPIFFS.open(TEMP_FILE, "r");
@@ -577,7 +622,7 @@ void carregarEstadoCiclo() {
   }
 }
 
-
+// Formata o timestamp para o padrão utilizado no Visual Studio
 String formatarTimestamp(const DateTime& dt) {
   // Cria um buffer de caracteres para armazenar a string formatada.
   // O tamanho 20 é suficiente para "YYYY-MM-DDTHH:MM:SS" mais o caractere nulo de terminação.
@@ -592,4 +637,15 @@ String formatarTimestamp(const DateTime& dt) {
 
   // Retorna o buffer como um objeto String do Arduino.
   return String(buffer);
+}
+
+// Converte a string salva no arquivo local em uma time stamp usável no programa
+DateTime stringParaDateTime(const String& timestampStr) {
+  int ano, mes, dia, hora, minuto, segundo;
+  
+  // sscanf é uma função poderosa para extrair números de uma string formatada.
+  // Ela lê a string e preenche as variáveis com os valores encontrados.
+  sscanf(timestampStr.c_str(), "%d-%d-%dT%d:%d:%d", &ano, &mes, &dia, &hora, &minuto, &segundo);
+  
+  return DateTime(ano, mes, dia, hora, minuto, segundo);
 }

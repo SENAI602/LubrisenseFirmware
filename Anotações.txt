@@ -1,0 +1,85 @@
+DEFINIÇÕES
+-------------------------------------------------------------------------------------
+
+public enum CONFIGTYPE { BASICO, AVANCADO }
+public enum INTERVALTYPE {NONE, HORA, DIA, MES }
+
+-------------------------------------------------------------------------------------
+
+Modo Básico:
+Informa o Volume e o intervalo máximo, o programa faz o resto
+-> Dosar com qual frequência ? 
+
+Modo Avançado:
+Informa o Volume por dosagem e a Intervalo que deseja realizar a dosagem
+-> Mas o programa para quando ?
+
+-------------------------------------------------------------------------------------
+
+config.json
+
+{
+  "Uuid": "00000000-0000-0000-0000-e465b86f8ade",
+  "Tag": "1020068",
+  "Equipamento": "furadeira",
+  "Setor": "lubrificação",
+  "Lubrificante": "CL1000",
+  "TipoConfig": 0,
+  "TipoIntervalo": 2,
+  "Volume": 10,
+  "Intervalo": 10,
+  "UltimaConexao": "2025-08-01T11:05:05.2706065-03:00"
+}
+
+-------------------------------------------------------------------------------------
+
+log.json
+
+{
+  "Bateria": 320,
+  "Temperatura": 45.2,
+  "BtnHabilitado": false,
+  "HistoricoLubrificacao": [
+    {
+      "Hora": "2025-08-04T10:30:00",
+      "Sucesso": true,
+      "Modo": "Automático",
+      "temperatura": 44.5,
+	  "Bateria": 320
+    },
+    {
+      "Hora": "2025-08-03T15:20:00",
+      "Sucesso": false,
+      "Modo": "Manual",
+      "temperatura": 46.0,
+	  "Bateria": 320
+    },
+    {
+      "Hora": "2025-08-02T09:05:00",
+      "Sucesso": true,
+      "Modo": "Manual",
+      "temperatura": 43.2,
+	  "Bateria": 280
+    }
+  ]
+}
+
+-------------------------------------------------------------------------------------
+Testes
+
+Recebido JSON via BLE:{"Uuid":"00000000-0000-0000-0000-f008d1d4f4ea","Tag":"tag2","Equipamento":"equi2","Setor":"set2","Lubrificante":"lubri2","TipoConfig":0,"TipoIntervalo":0,"Volume":100,"Intervalo":5,"UltimaConexao":"2025-08-06T10:36:06.6694041-03:00"}
+
+{
+  "Uuid": "00000000-0000-0000-0000-f008d1d4f4ea",
+  "Tag": "tag2",
+  "Equipamento": "equi2",
+  "Setor": "set2",
+  "Lubrificante": "lubri2",
+  "TipoConfig": 0,
+  "TipoIntervalo": 0,
+  "Volume": 100,
+  "Intervalo": 5,
+  "UltimaConexao": "2025-08-06T10:36:06.6694041-03:00"
+}
+
+-------------------------------------------------------------------------------------

@@ -2,112 +2,154 @@
 //public enum CONFIGTYPE { BASICO, AVANCADO } Basico = 0 / Avançado = 1
 //public enum INTERVALTYPE {NONE, HORA, DIA, MES } Hora = 1 / Dia = 2 / Mês = 3
 
-#include <Arduino.h>
-#include "LoRaMESH.h"      // Biblioteca de comunicação LoRa
-#include <SPIFFS.h>       // Para o sistema de arquivos do ESP32
-#include <ArduinoJson.h>  // Para manipulação de JSON
-#include <vector>         // Adicionado para gerenciar o log em memória
-#include "BleService.h"    // Inclui a "ponte" para o nosso serviço BLE
-#include <WiFi.h>         // Conexão wifi
-#include <Wire.h>
-#include "RTClib.h"        // Módulo RC
+// ==========================================================================
+// --- INCLUSÃO DE BIBLIOTECAS (DEPENDÊNCIAS) ---
+// ==========================================================================
 
-// WIFI para sincronizar RTC
-const char* ssid = "Leonardo2"; 
-const char* password = "senaisp602";
+#include <Arduino.h>       // Framework principal do Arduino para ESP32.
+#include <vector>          // Biblioteca C++ para usar listas dinâmicas (vetores).
+#include "LoRaMESH.h"      // Driver para o módulo de rádio LoRa em modo Mesh.
+#include "BleService.h"    // Módulo personalizado para o serviço Bluetooth Low Energy (BLE).
+#include <WiFi.h>          // Gerenciamento de conexão Wi-Fi para sincronização de tempo.
+#include <Wire.h>          // Protocolo de comunicação I2C, usado pelo módulo RTC.
+#include <SPIFFS.h>        // Gerenciador do sistema de arquivos na memória flash do ESP32.
+#include <ArduinoJson.h>   // Para codificar e decodificar dados no formato JSON.
+#include "RTClib.h"        // Driver para o módulo de Relógio de Tempo Real (RTC DS3231).
 
-// --- Configuração dos Arquivos e Constantes ---
-#define CONFIG_FILE "/config.json"
-#define LOG_FILE    "/log.jsonl"
-#define TEMP_FILE    "/temp.json"
-const size_t LIMITE_LINHAS_LOG = 10;
-const char* TIMESTAMP_CONSTANT = "2025-07-02T15:00:00Z";
-unsigned long intervaloEnviarGateway = 15000;
-const unsigned long INTERVALO_PADRAO_SEGURO = 15000; // 15 segundos
+// ==========================================================================
+// --- CREDENCIAIS DE WI-FI (PARA SINCRONIZAÇÃO NTP) ---
+// ==========================================================================
+// Estas credenciais são usadas apenas na inicialização para conectar à internet
+// e sincronizar o relógio do módulo RTC com um servidor de tempo mundial (NTP).
+// Após a sincronização, o Wi-Fi é desligado.
+// ==========================================================================
+const char* ssid = "Leonardo2";      // Nome da rede Wi-Fi (SSID).
+const char* password = "senaisp602"; // Senha da rede Wi-Fi.
 
-// --- Configuração dos Pinos ---
-#define LORA_TX_PIN 17
-#define LORA_RX_PIN 16
-#define SEN_NIVEL_1 4
-#define SEN_NIVEL_2 5
-#define BTN_MANUAL 19
-#define BTN_EXTRA 20
-#define MOTOR 32
-#define I2C_SDA 22
-#define I2C_SCL 23
-//#define TEMP_PIN    34         // Pino para ler a temperatura
-//#define MANUAL_TRIGGER_PIN 4   // Novo pino para o botão de disparo manual
+// ==========================================================================
+// --- ARQUIVOS E CONSTANTES DE CONTROLE ---
+// ==========================================================================
 
-// --- Configurações da Rede LoRa ---
-#define GATEWAY_ID 0
+// --- Nomes dos Arquivos no Sistema SPIFFS ---
+#define CONFIG_FILE "/config.json" // Armazena a configuração principal recebida via LoRa ou BLE.
+#define LOG_FILE    "/log.jsonl"   // Armazena o histórico das últimas lubrificações (eventos).
+#define TEMP_FILE   "/temp.json"   // Salva o estado atual do ciclo (iniciado, última lubrificação).
 
-// --- CONFIGURAÇÕES DE NTP do RTC ---
-const char* ntpServer = "a.st1.ntp.br";
-const long  gmtOffset_sec = -3 * 3600;
-const int   daylightOffset_sec = 0;
-RTC_DS3231 rtc;
-unsigned long ultimaSincronizacao = 0;
-
-// --- Definições dos Comandos LoRa ---
-#define CMD_FROM_MASTER_CONFIG 0x10
-#define CMD_FROM_MASTER_ACK    0x11
-#define CMD_TO_GATEWAY_EVENT   0x20
+// --- Parâmetros de Funcionamento ---
+const size_t limiteLinhasLog = 10;                  // Define o número máximo de registros a serem mantidos no log.jsonl.
+unsigned long intervaloEnviarGateway = 15000;       // Frequência (em ms) com que o dispositivo tenta enviar logs pendentes.
+const unsigned long intervaloMinimoLubrificacao = 10000; // Trava de segurança (em ms) para evitar que intervalos muito curtos causem travamento.
 
 
-// --- Variáveis Globais de Controle ---
-int varConfigVolume = 10; 
-unsigned long ultimaLubrificacao = 0;
-unsigned long ultimoReenvio = 0;
-bool aguardandoAck = false;
-unsigned long aguardandoAckDesde = 0;
-const unsigned long TIMEOUT_ACK = 15000;
-int lastManualButtonState = HIGH;
-unsigned long lastPrintTime = 0; // Variável para controlar a impressão a cada 1s
-int lastBtnManualState = HIGH; // Armazena o último estado do botão manual
+// ==========================================================================
+// --- MAPEAMENTO DE PINOS (HARDWARE) ---
+// ==========================================================================
 
-// --- Variáveis de Controle para Bloqueio de Tempo ---
-unsigned long ultimoAcionamentoBotao1 = 0;
-unsigned long ultimoAcionamentoBotao2 = 0;
-const unsigned long intervaloBloqueio = 5000; // 5 segundos em milissegundos
+// --- Comunicação LoRa ---
+#define LORA_TX_PIN 17 // Conecta ao pino RX do módulo LoRa.
+#define LORA_RX_PIN 16 // Conecta ao pino TX do módulo LoRa.
 
-// --- Variáveis Globais para o Estado do Ciclo (lidas do temp.json) ---
-bool varTempCicloStartado = false;
-String varTempHorarioStartado = "";
-String varTempUltimaLubrificacao = "";
+// --- Sensores e Atuadores ---
+#define SEN_NIVEL_1 4  // Sensor de nível baixo de lubrificante.
+#define SEN_NIVEL_2 5  // Sensor de nível crítico de lubrificante.
+#define MOTOR       32 // Pino que aciona o relé/driver do motor de lubrificação.
 
-// --- Variáveis Globais para a Configuração ---
+// --- Entradas do Usuário (Botões) ---
+#define BTN_MANUAL  19 // Botão para iniciar um ciclo de lubrificação manual.
+#define BTN_EXTRA   20 // Botão para funções futuras ou testes.
+
+// --- Comunicação I2C para o Módulo RTC ---
+#define I2C_SDA     22 // Pino de dados (SDA) para o RTC DS3231.
+#define I2C_SCL     23 // Pino de clock (SCL) para o RTC DS3231.
+
+// --- Pinos Desativados ou Futuros ---
+// #define TEMP_PIN 34 // Sensor de temperatura (atualmente desativado).
+
+// ==========================================================================
+// --- CONFIGURAÇÕES DO LORA ---
+// ==========================================================================
+
+// --- Rede LoRa ---
+#define GATEWAY_ID 0 // Define o endereço do Gateway na rede LoRa.
+
+// --- Protocolo de Comandos LoRa (Definições Hexadecimais) ---
+// Comandos recebidos do Gateway:
+#define CMD_FROM_MASTER_CONFIG 0x10 // Comando para receber um novo arquivo de configuração.
+#define CMD_FROM_MASTER_ACK    0x11 // Comando de confirmação (ACK) de que um evento foi recebido pelo Gateway.
+#define CMD_TO_GATEWAY_EVENT   0x20 // Comando para enviar um novo registro de evento (lubrificação).
+
+HardwareSerial LoRaSerial(2); // Objeto para a comunicação Serial na UART2 com o módulo LoRa.
+LoRaMESH lora(&LoRaSerial);   // Instância da biblioteca LoRaMESH.
+
+// ==========================================================================
+// --- Sincronização de Tempo (RTC via NTP) ---
+// ==========================================================================
+const char* ntpServer = "a.st1.ntp.br";       // Servidor NTP brasileiro para obter a hora mundial.
+const long  gmtOffset_sec = -3 * 3600;        // Fuso horário de Brasília (GMT-3) em segundos.
+const int   daylightOffset_sec = 0;           // Ajuste para horário de verão (desativado).
+RTC_DS3231 rtc;                               // Cria o objeto que representa o módulo RTC DS3231.
+unsigned long ultimaSincronizacao = 0;        // Armazena o tempo (em millis) da última sincronização bem-sucedida.
+
+// ==========================================================================
+// --- VARIÁVEIS GLOBAIS E OBJETOS ---
+// ==========================================================================
+
 String varConfigUuid = "";
 String varConfigTag = "";
 String varConfigEquipamento = "";
 String varConfigSetor = "";
 String varConfigLubrificante = "";
-int varConfigTipoConfig = 0;
-int varConfigTipoIntervalo = 0;
-unsigned long varConfigIntervalo = 0;
+int    varConfigTipoConfig = 0;
+int    varConfigTipoIntervalo = 0;
+int    varConfigVolume = 10;          
+unsigned long varConfigIntervalo = 0; 
 String varConfigUltimaConexao = "";
+bool   varTempCicloStartado = false;      // Indica se um ciclo (manual ou automático) está ativo.
+String varTempHorarioStartado = "";     // Timestamp de quando o ciclo atual foi iniciado.
+String varTempUltimaLubrificacao = "";  // Timestamp da última lubrificação executada.
+unsigned long ultimoReenvio = 0;        // Registra o tempo do último envio de log para o Gateway.
+bool          aguardandoAck = false;      // Flag que indica se o dispositivo está esperando uma confirmação (ACK) do Gateway.
+unsigned long aguardandoAckDesde = 0;   // Registra quando a espera pelo ACK começou.
+const unsigned long TIMEOUT_ACK = 15000;  // Tempo máximo (em ms) de espera por um ACK.
+int           lastBtnManualState = HIGH;  // Armazena o estado anterior do botão manual para detectar a borda de subida.
+unsigned long ultimoAcionamentoBotao1 = 0;    // Registra o tempo do último acionamento do botão manual.
+unsigned long ultimoAcionamentoBotao2 = 0;    // Registra o tempo do último acionamento do botão extra.
+const unsigned long intervaloBloqueio = 5000; // Intervalo de tempo (em ms) que um botão fica bloqueado após ser pressionado.
 
-// --- Variáveis Globais para Comunicação com BLE (Definidas aqui) ---
-volatile bool newDataFromBLE = false;
-String bleReceivedValue = "";
 
-// --- Objetos e Instâncias ---
-HardwareSerial LoRaSerial(2);
-LoRaMESH lora(&LoRaSerial);
+// --- Comunicação Bluetooth (BLE) ---
+// Variáveis para a troca de dados entre o serviço BLE e o loop principal.
+// 'volatile' é usado para garantir que a variável seja lida corretamente,
+// pois ela pode ser modificada por uma interrupção do BLE.
+// --------------------------------------------------------------------------
+volatile bool newDataFromBLE = false;     // Flag que sinaliza a chegada de novos dados via BLE.
+String        bleReceivedValue = "";      // Armazena a string de configuração recebida do BLE.
 
-// --- Protótipos de Funções (do próprio arquivo) ---
+
+// ==========================================================================
+// --- PROTÓTIPOS DE FUNÇÕES (DECLARAÇÕES) ---
+// ==========================================================================
+// Informa ao compilador sobre a existência dessas funções antes de serem usadas.
+
+// --- Funções de Comunicação ---
 void sendJsonViaLoRa(const String &json, uint8_t command);
+bool sincronizarViaNTP();
 void salvarConfig(const char* json);
+void loadInitialConfig();
+void salvarEstadoCiclo(bool cicloStartado, const String& horarioStartado, const String& ultimaLubrificacao);
+void carregarEstadoCiclo();
+void displayFileContent(const char* filename);
 void registrarEvento(const String& fonte);
 void tentarReenvio();
 void marcarEventoComoEnviado();
-void displayFileContent(const char* filename);
-void loadInitialConfig();
-bool sincronizarViaNTP();
-void salvarEstadoCiclo(bool cicloStartado, const String& horarioStartado, const String& ultimaLubrificacao);
 String formatarTimestamp(const DateTime& dt);
-void carregarEstadoCiclo();
 DateTime stringParaDateTime(const String& timestampStr);
 
+// =======================================================================================================================================
+
+// ==========================================================================
+// --- SETUP ---
+// ==========================================================================
 void setup() {
   delay(500);
   Serial.begin(115200);
@@ -161,7 +203,11 @@ void setup() {
   setupBLE();
 }
 
+// =======================================================================================================================================
 
+// ==========================================================================
+// --- LOOP ---
+// ==========================================================================
 void loop() {
   //-----------------------------------------------------------------------------------------------------------------------------------  
   // Detecta o acionamento do botão manual (pressionado), garantindo que seja uma transição válida (HIGH → LOW) 
@@ -176,8 +222,9 @@ void loop() {
     ultimoAcionamentoBotao1 = millis(); // Atualiza o tempo do último acionamento
     String timestampAtual = formatarTimestamp(rtc.now());
     salvarEstadoCiclo(true,timestampAtual,timestampAtual);
+    registrarEvento("Manual");
   }
-  // Atualiza o estado anterior para a próxima verificação no loop
+  // Atualiza o estado anterior para a próxima verificação nlo loop
   lastBtnManualState = estadoAtualBtnManual;
   //----------------------------------------------------------------------------------------------------------------------------------- 
   // Lógica do Ciclo de Lubrificação Automático
@@ -198,7 +245,7 @@ void loop() {
     // Verifica se o tempo atual for maior ou igual ao tempo da última lubrificação + o intervalo...
     if (agora_ts >= (ultima_lub_ts + intervalo_s)) {
       Serial.println("\n[CICLO AUTOMÁTICO] Tempo de lubrificação atingido!");
-      registrarEvento("auto");
+      registrarEvento("Auto");
       
       //Acionamento do motor para lubrificar
       digitalWrite(MOTOR, HIGH);
@@ -358,7 +405,7 @@ void salvarConfig(const char* json) {
     // Verificação de segurança
     if (novoIntervaloCalculado < 10000) { // Aumentado para um mínimo de 10s
       Serial.println("[AVISO] Intervalo calculado é muito baixo (< 10s). Usando valor padrão.");
-      varConfigIntervalo = INTERVALO_PADRAO_SEGURO;
+      varConfigIntervalo = intervaloMinimoLubrificacao;
     } else {
       varConfigIntervalo = novoIntervaloCalculado;
     }
@@ -390,14 +437,14 @@ void registrarEvento(const String& fonte) {
     readFile.close();
   }
 
-  while (lines.size() >= LIMITE_LINHAS_LOG) {
+  while (lines.size() >= limiteLinhasLog) {
     lines.erase(lines.begin());
   }
 
   JsonDocument doc;
   doc["Hora"] = formatarTimestamp(rtc.now());
   doc["Sucesso"] = true;
-  doc["Modo"] = varConfigTipoConfig;
+  doc["Modo"] = fonte;
   doc["Temperatura"] = random(20, 50);
   doc["Bateria"] = random(0, 100);
   doc["e"] = false;

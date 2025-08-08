@@ -45,20 +45,13 @@ const unsigned long intervaloMinimoLubrificacao = 10000; // Trava de segurança 
 // --- MAPEAMENTO DE PINOS (HARDWARE) ---
 // ==========================================================================
 
-// --- Comunicação LoRa ---
 #define LORA_TX_PIN 17 // Conecta ao pino RX do módulo LoRa.
 #define LORA_RX_PIN 16 // Conecta ao pino TX do módulo LoRa.
-
-// --- Sensores e Atuadores ---
 #define SEN_NIVEL_1 4  // Sensor de nível baixo de lubrificante.
 #define SEN_NIVEL_2 5  // Sensor de nível crítico de lubrificante.
 #define MOTOR       32 // Pino que aciona o relé/driver do motor de lubrificação.
-
-// --- Entradas do Usuário (Botões) ---
 #define BTN_MANUAL  19 // Botão para iniciar um ciclo de lubrificação manual.
 #define BTN_EXTRA   20 // Botão para funções futuras ou testes.
-
-// --- Comunicação I2C para o Módulo RTC ---
 #define I2C_SDA     22 // Pino de dados (SDA) para o RTC DS3231.
 #define I2C_SCL     23 // Pino de clock (SCL) para o RTC DS3231.
 
@@ -91,9 +84,10 @@ RTC_DS3231 rtc;                               // Cria o objeto que representa o 
 unsigned long ultimaSincronizacao = 0;        // Armazena o tempo (em millis) da última sincronização bem-sucedida.
 
 // ==========================================================================
-// --- VARIÁVEIS GLOBAIS E OBJETOS ---
+// --- VARIÁVEIS ---
 // ==========================================================================
 
+// Variaveis do arquivo config.json
 String varConfigUuid = "";
 String varConfigTag = "";
 String varConfigEquipamento = "";
@@ -104,9 +98,13 @@ int    varConfigTipoIntervalo = 0;
 int    varConfigVolume = 10;          
 unsigned long varConfigIntervalo = 0; 
 String varConfigUltimaConexao = "";
+
+// Variaveis do arquivo temp.json
 bool   varTempCicloStartado = false;      // Indica se um ciclo (manual ou automático) está ativo.
 String varTempHorarioStartado = "";     // Timestamp de quando o ciclo atual foi iniciado.
 String varTempUltimaLubrificacao = "";  // Timestamp da última lubrificação executada.
+
+// Outras
 unsigned long ultimoReenvio = 0;        // Registra o tempo do último envio de log para o Gateway.
 bool          aguardandoAck = false;      // Flag que indica se o dispositivo está esperando uma confirmação (ACK) do Gateway.
 unsigned long aguardandoAckDesde = 0;   // Registra quando a espera pelo ACK começou.
@@ -151,45 +149,46 @@ DateTime stringParaDateTime(const String& timestampStr);
 // --- SETUP ---
 // ==========================================================================
 void setup() {
+  // Inicia a serial
   delay(500);
   Serial.begin(115200);
   delay(500);
+
+  // Configura os pinos do esp
   pinMode(BTN_MANUAL, INPUT_PULLUP);
   pinMode(BTN_EXTRA, INPUT_PULLUP);
   pinMode(SEN_NIVEL_1, INPUT);
   pinMode(SEN_NIVEL_2, INPUT);
   pinMode(MOTOR, OUTPUT);
 
+  // Configura o RTC
   Wire.begin(I2C_SDA, I2C_SCL);
-
   if (!rtc.begin()) {
     Serial.println("Não foi possível encontrar o RTC! Verifique as conexões.");
     while (1);
-  }
-
-  // LÓGICA DE SINCRONIZAÇÃO INTELIGENTE
+  }  
   if (rtc.lostPower()) {
     Serial.println("RTC perdeu energia ou é a primeira inicialização. Sincronizando via NTP...");
     if (sincronizarViaNTP()) {
-      ultimaSincronizacao = millis(); // Atualiza o marcador de tempo da última sincronização
+      ultimaSincronizacao = millis();
     }
   } else {
     Serial.println("RTC manteve a energia. A hora atual é:");
-    // Se a energia não foi perdida, consideramos que a última sincronização "válida" foi agora,
-    // para que a contagem do loop comece a partir deste momento.
     ultimaSincronizacao = millis(); 
   }
-  Serial.println("\n--- [SLAVE] Inicializando EndPoint com LoRa e BLE ---");
-  Serial.println("--- Envie 'c' para ver config.json ou 'l' para ver log.jsonl ---");
 
+  // Prepara o sistema SPIFFS
   if (!SPIFFS.begin(true)) {
     Serial.println("[ERRO] Falha ao montar o SPIFFS.");
     while (true);
   }
   Serial.println("[OK] Sistema de arquivos montado.");
+  
+  // Carrega o arquivo config assim que o esp liga
   loadInitialConfig();
 
-   carregarEstadoCiclo();
+  // Carrega o arquivo temp assim que o esp liga
+  carregarEstadoCiclo();
 
   //Preparação do Lora
   LoRaSerial.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
@@ -199,8 +198,12 @@ void setup() {
   Serial.print("[OK] Módulo LoRa iniciado. ID Local: ");
   Serial.println(lora.localId);
   
+  // Inicia o BLE
   Serial.println("Iniciando ESP32 com BLE...");
   setupBLE();
+
+  Serial.println("\n--- [SLAVE] Inicializado EndPoint com LoRa e BLE ---");
+  Serial.println("--- Envie 'c' para ver config.json, 'l' para ver log.jsonl ou 't' oara ver o temp.json ---");
 }
 
 // =======================================================================================================================================

@@ -1,6 +1,6 @@
-//Informações do Visual Studio (Aplicativo)
-//public enum CONFIGTYPE { BASICO, AVANCADO } Basico = 0 / Avançado = 1
-//public enum INTERVALTYPE {NONE, HORA, DIA, MES } Hora = 1 / Dia = 2 / Mês = 3
+// Definições do aplicativo:
+// public enum CONFIGTYPE { BASICO, AVANCADO } Basico = 0 / Avançado = 1
+// public enum INTERVALTYPE {NONE, HORA, DIA, MES } Hora = 1 / Dia = 2 / Mês = 3
 
 // ==========================================================================
 // --- INCLUSÃO DE BIBLIOTECAS (DEPENDÊNCIAS) ---
@@ -15,6 +15,7 @@
 #include <SPIFFS.h>        // Gerenciador do sistema de arquivos na memória flash do ESP32.
 #include <ArduinoJson.h>   // Para codificar e decodificar dados no formato JSON.
 #include "RTClib.h"        // Driver para o módulo de Relógio de Tempo Real (RTC DS3231).
+#include <INA226.h>        // Leitura do nível de bateria
 
 // ==========================================================================
 // --- CREDENCIAIS DE WI-FI (PARA SINCRONIZAÇÃO NTP) ---
@@ -52,9 +53,16 @@ unsigned long intervaloEnviarGateway = 15000;             // Frequência (em ms)
 #define BTN_EXTRA   20 // Botão para funções futuras ou testes.
 #define I2C_SDA     22 // Pino de dados (SDA) para o RTC DS3231.
 #define I2C_SCL     23 // Pino de clock (SCL) para o RTC DS3231.
+#define PT100_PIN   34 // Pino ADC para ler a saída do conversor 4-20mA.
+INA226 ina226(0x40);   // <-- Cria o objeto com o endereço I2C correto
 
-// --- Pinos Desativados ou Futuros ---
-// #define TEMP_PIN 34 // Sensor de temperatura (atualmente desativado).
+// ==========================================================================
+// --- CONSTANTES PARA O SENSOR PT100 4-20mA ---
+// ==========================================================================
+
+const float R_SHUNT = 249.0;      // Valor do resistor de precisão (R11) em Ohms.
+const float TEMP_MIN = 0.0;       // Temperatura correspondente a 4mA (conforme o transmissor).
+const float TEMP_MAX = 150.0;     // Temperatura correspondente a 20mA (conforme o transmissor).
 
 // ==========================================================================
 // --- CONFIGURAÇÕES DO LORA ---
@@ -148,9 +156,8 @@ DateTime stringParaDateTime(const String& timestampStr);
 // ==========================================================================
 void setup() {
   // Inicia a serial
-  delay(500);
   Serial.begin(115200);
-  delay(500);
+  delay(100);
 
   // Configura os pinos do esp
   pinMode(BTN_MANUAL, INPUT_PULLUP);
@@ -195,6 +202,14 @@ void setup() {
   lora.debug_serial = false;
   Serial.print("[OK] Módulo LoRa iniciado. ID Local: ");
   Serial.println(lora.localId);
+
+  // Inicia o sensor medidor de bateria INA226
+  ina226.begin();
+  if (!ina226.isConnected()) {
+    Serial.println("[ERRO] Falha ao encontrar o sensor INA226! Verifique a fiação.");
+  } else {
+    Serial.println("[OK] Sensor INA226 encontrado e iniciado.");
+  }
   
   // Inicia o BLE
   Serial.println("Iniciando ESP32 com BLE...");
@@ -237,8 +252,7 @@ void loop() {
   // CICLO AUTOMÁTICO
   //-----------------------------------------------------------------------------------------------------------------------------------
   // Verifica se a variável está como true. Pois, o ciclo automático só começa a contar depois que houver a primeira dosagem manual
-  if (varTempCicloStartado) {
-    
+  if (varTempCicloStartado) {    
     // Obtém a hora atual do RTC e Converte a string da última lubrificação para um objeto DateTime
     DateTime agora = rtc.now();
     DateTime ultimaLubrificacaoDT = stringParaDateTime(varTempUltimaLubrificacao);
@@ -250,22 +264,34 @@ void loop() {
     // Converte o intervalo de configuração (que está em milissegundos) para segundos
     uint32_t intervalo_s = varConfigIntervalo / 1000;
 
-    // Verifica se o tempo atual for maior ou igual ao tempo da última lubrificação + o intervalo...
-    if (agora_ts >= (ultima_lub_ts + intervalo_s)) {
-      Serial.println("\n[CICLO AUTOMÁTICO] Tempo de lubrificação atingido!");
-      registrarEvento("Auto");
-      
-      //  \/ LÓGICA DE DOSAGEM AQUI \/
-      digitalWrite(MOTOR, HIGH);
-      delay(500);
-      digitalWrite(MOTOR, LOW);
+      // Verifica se o tempo atual for maior ou igual ao tempo da última lubrificação + o intervalo...
+      if (agora_ts >= (ultima_lub_ts + intervalo_s)) {
+        Serial.println("\n[CICLO AUTOMÁTICO] Tempo de lubrificação atingido!");       
 
-      // Atualiza a variável da última lubrificação com a hora atual para reiniciar o timer
-      varTempUltimaLubrificacao = formatarTimestamp(agora);
-      
-      // Salva o novo estado no arquivo para que ele não se perca se o dispositivo reiniciar
-      salvarEstadoCiclo(true, varTempHorarioStartado, varTempUltimaLubrificacao);
-    }
+        //Modo Básico
+        if(varConfigTipoConfig==1){       
+          Serial.println("\n[CICLO AUTOMÁTICO] Realizando dosagem no modo básico"); 
+          //  \/ LÓGICA DE DOSAGEM AQUI \/
+          digitalWrite(MOTOR, HIGH);
+          delay(500);
+          digitalWrite(MOTOR, LOW);
+
+        //Modo Avançado
+        }else if (varConfigTipoConfig==2){ 
+          Serial.println("\n[CICLO AUTOMÁTICO] Realizando dosagem no modo avançado");        
+          //  \/ LÓGICA DE DOSAGEM AQUI \/
+          digitalWrite(MOTOR, HIGH);
+          delay(500);
+          digitalWrite(MOTOR, LOW);
+        }
+        
+        // Escreve no arquivo log
+        registrarEvento("Auto");
+        // Atualiza a variável da última lubrificação com a hora atual para reiniciar o timer
+        varTempUltimaLubrificacao = formatarTimestamp(agora);          
+        // Salva o novo estado no arquivo para que ele não se perca se o dispositivo reiniciar
+        salvarEstadoCiclo(true, varTempHorarioStartado, varTempUltimaLubrificacao);
+      }    
   }
 
   //----------------------------------------------------------------------------------------------------------------------------------- 
@@ -441,12 +467,12 @@ void registrarEvento(const String& fonte) {
   }
 
   JsonDocument doc;
-  doc["Hora"] = formatarTimestamp(rtc.now());
-  doc["Sucesso"] = true;
-  doc["Modo"] = fonte;
-  doc["Temperatura"] = random(20, 50);
-  doc["Bateria"] = random(0, 100);
-  doc["e"] = false;
+  doc["Hora"] = formatarTimestamp(rtc.now());   // Data/Hora atual
+  doc["Sucesso"] = true;                        // FUTURAMENTE: Implementar a verificação do motor para garantir que tenha feito a lubrificação
+  doc["Modo"] = fonte;                          // Manual ou Automático
+  doc["Temperatura"] = lerTemperaturaPT100();   // Temperatura
+  doc["Bateria"] = lerNivelBateria();           // Nivel da bateria
+  doc["e"] = false;                             // Variável que fala se a linha foi enviada para o gateway
 
   String newLogLine;
   serializeJson(doc, newLogLine);
@@ -694,4 +720,42 @@ DateTime stringParaDateTime(const String& timestampStr) {
   sscanf(timestampStr.c_str(), "%d-%d-%dT%d:%d:%d", &ano, &mes, &dia, &hora, &minuto, &segundo);
   
   return DateTime(ano, mes, dia, hora, minuto, segundo);
+}
+
+int lerNivelBateria() {
+  // getBusVoltage_V() retorna a voltagem diretamente em Volts
+  float voltagem = ina226.getBusVoltage();
+  // Mapeia a faixa de voltagem (3.2V a 4.2V) para a faixa de porcentagem (0 a 100)
+  float porcentagem = ((voltagem - 3.2) / (4.2 - 3.2)) * 100.0;
+
+  // Garante que o valor final esteja sempre entre 0 e 100
+  if (porcentagem > 100) {
+    porcentagem = 100;
+  }
+  if (porcentagem < 0) {
+    porcentagem = 0;
+  }
+
+  return (int)porcentagem; // Retorna o valor como um número inteiro
+}
+
+float lerTemperaturaPT100() {
+  // 1. Lê o valor bruto do ADC (0-4095)
+  int valorADC = analogRead(PT100_PIN);
+
+  // 2. Converte o valor do ADC para Voltagem (assumindo referência de 3.3V)
+  float voltagem = (valorADC / 4095.0) * 3.3;
+
+  // 3. Calcula a corrente usando a Lei de Ohm (I = V/R)
+  // O resultado será em Amperes, então multiplicamos por 1000 para ter em miliamperes (mA)
+  float corrente_mA = (voltagem / R_SHUNT) * 1000.0;
+
+  // 4. Mapeia a faixa de corrente (4mA a 20mA) para a faixa de temperatura
+  float temperatura = ((corrente_mA - 4.0) / (20.0 - 4.0)) * (TEMP_MAX - TEMP_MIN) + TEMP_MIN;
+
+  // Garante que o valor não saia da faixa esperada
+  if (temperatura < TEMP_MIN) temperatura = TEMP_MIN;
+  if (temperatura > TEMP_MAX) temperatura = TEMP_MAX;
+
+  return temperatura;
 }

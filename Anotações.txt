@@ -5,6 +5,38 @@ public enum CONFIGTYPE { BASICO, AVANCADO }
 public enum INTERVALTYPE {NONE, HORA, DIA, MES }
 
 -------------------------------------------------------------------------------------
+Bluetooth:
+Quando tiver um trigger do app, o rasp vai ler esse trigger e enviar de volta no BLE as informações para o app ser preenchido (arquivo log.json e config.json)
+(Criar comando: e payload:)
+-----------------------------------
+{"comando": "get_log"}
+
+{"comando": "get_config"}
+
+{
+  "comando": "set_config",
+  "payload": {
+    "Uuid": "...",
+    "Tag": "...",
+    ...
+  }
+}
+-----------------------------------
+if (comando == "get_log") {
+      Serial.println("[BLE] Comando 'get_log' recebido. Enviando log.jsonl...");
+      sendFileOverBLE(LOG_FILE);
+
+    } else if (comando == "get_config") {
+      Serial.println("[BLE] Comando 'get_config' recebido. Enviando config.json...");
+      sendFileOverBLE(CONFIG_FILE);
+
+    } else if (comando == "set_config") {
+      Serial.println("[BLE] Comando 'set_config' recebido. Salvando nova configuração...");
+      JsonObject payload = doc["payload"];
+-----------------------------------
+
+Botão Manual:
+Pressionou, realiza a dosagem. Mas baseada em que ? Vai ter um parâmtetro no aplicativo da dosagem manual ?
 
 Modo Básico:
 Informa o Volume e o intervalo máximo, o programa faz o resto

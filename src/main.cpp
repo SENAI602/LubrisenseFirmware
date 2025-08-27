@@ -36,10 +36,8 @@ const char* password = "senaisp602"; // Senha da rede Wi-Fi.
 #define TEMP_FILE   "/temp.json"   // Salva o estado atual do ciclo (iniciado, última lubrificação).
 
 // --- Parâmetros de Funcionamento ---
-const size_t limiteLinhasLog = 10;                  // Define o número máximo de registros a serem mantidos no log.jsonl.
-unsigned long intervaloEnviarGateway = 15000;       // Frequência (em ms) com que o dispositivo tenta enviar logs pendentes.
-const unsigned long intervaloMinimoLubrificacao = 10000; // Trava de segurança (em ms) para evitar que intervalos muito curtos causem travamento.
-
+const size_t limiteLinhasLog = 10;                        // Define o número máximo de registros a serem mantidos no log.jsonl.
+unsigned long intervaloEnviarGateway = 15000;             // Frequência (em ms) com que o dispositivo tenta enviar logs pendentes.
 
 // ==========================================================================
 // --- MAPEAMENTO DE PINOS (HARDWARE) ---
@@ -109,8 +107,8 @@ unsigned long ultimoReenvio = 0;        // Registra o tempo do último envio de 
 bool          aguardandoAck = false;      // Flag que indica se o dispositivo está esperando uma confirmação (ACK) do Gateway.
 unsigned long aguardandoAckDesde = 0;   // Registra quando a espera pelo ACK começou.
 const unsigned long TIMEOUT_ACK = 15000;  // Tempo máximo (em ms) de espera por um ACK.
-int           lastBtnManualState = HIGH;  // Armazena o estado anterior do botão manual para detectar a borda de subida.
-unsigned long ultimoAcionamentoBotao1 = 0;    // Registra o tempo do último acionamento do botão manual.
+int           estadoAnteriorBtnManual = HIGH;  // Armazena o estado anterior do botão manual para detectar a borda de subida.
+unsigned long ultimoAcionamentoBotaoManual = 0;    // Registra o tempo do último acionamento do botão manual.
 unsigned long ultimoAcionamentoBotao2 = 0;    // Registra o tempo do último acionamento do botão extra.
 const unsigned long intervaloBloqueio = 5000; // Intervalo de tempo (em ms) que um botão fica bloqueado após ser pressionado.
 
@@ -213,25 +211,32 @@ void setup() {
 // ==========================================================================
 void loop() {
   //-----------------------------------------------------------------------------------------------------------------------------------  
-  // Detecta o acionamento do botão manual (pressionado), garantindo que seja uma transição válida (HIGH → LOW) 
-  // e respeitando um intervalo mínimo entre acionamentos, para então registrar o início de um ciclo manual com timestamp 
-  // e ativar a variável de controle.
+  // CICLO MANUAL (BOTÃO)
   //-----------------------------------------------------------------------------------------------------------------------------------  
   // Lê o estado atual do botão Manual
   int estadoAtualBtnManual = digitalRead(BTN_MANUAL);
   // Verifica se o botão FOI pressionado (transição de HIGH para LOW)
-  if (estadoAtualBtnManual == LOW && lastBtnManualState == HIGH && (millis() - ultimoAcionamentoBotao1 > intervaloBloqueio)){
+  if (estadoAtualBtnManual == LOW && estadoAnteriorBtnManual == HIGH && (millis() - ultimoAcionamentoBotaoManual > intervaloBloqueio)){
     Serial.println("Botão manual pressionado!");
-    ultimoAcionamentoBotao1 = millis(); // Atualiza o tempo do último acionamento
+
+    //  \/ LÓGICA DE DOSAGEM AQUI \/
+    digitalWrite(MOTOR, HIGH);
+    delay(500);
+    digitalWrite(MOTOR, LOW);
+    // ---
+
+    // Salva o horario do ciclo atual para calcular quando será o próximo. Registra o evento no log como manual
+    ultimoAcionamentoBotaoManual = millis(); // Atualiza o tempo do último acionamento
     String timestampAtual = formatarTimestamp(rtc.now());
     salvarEstadoCiclo(true,timestampAtual,timestampAtual);
     registrarEvento("Manual");
   }
   // Atualiza o estado anterior para a próxima verificação nlo loop
-  lastBtnManualState = estadoAtualBtnManual;
+  estadoAnteriorBtnManual = estadoAtualBtnManual;
   //----------------------------------------------------------------------------------------------------------------------------------- 
-  // Lógica do Ciclo de Lubrificação Automático
+  // CICLO AUTOMÁTICO
   //-----------------------------------------------------------------------------------------------------------------------------------
+  // Verifica se a variável está como true. Pois, o ciclo automático só começa a contar depois que houver a primeira dosagem manual
   if (varTempCicloStartado) {
     
     // Obtém a hora atual do RTC e Converte a string da última lubrificação para um objeto DateTime
@@ -250,7 +255,7 @@ void loop() {
       Serial.println("\n[CICLO AUTOMÁTICO] Tempo de lubrificação atingido!");
       registrarEvento("Auto");
       
-      //Acionamento do motor para lubrificar
+      //  \/ LÓGICA DE DOSAGEM AQUI \/
       digitalWrite(MOTOR, HIGH);
       delay(500);
       digitalWrite(MOTOR, LOW);
@@ -372,8 +377,6 @@ void salvarConfig(const char* json) {
     return;
   }
 
-  // --- CORREÇÃO APLICADA AQUI ---
-  // Primeiro, lemos todos os valores do JSON para as variáveis globais.
   if (!doc["Uuid"].isNull()) varConfigUuid = doc["Uuid"].as<String>();
   if (!doc["Tag"].isNull()) varConfigTag = doc["Tag"].as<String>();
   if (!doc["Equipamento"].isNull()) varConfigEquipamento = doc["Equipamento"].as<String>();
@@ -404,14 +407,7 @@ void salvarConfig(const char* json) {
     }
 
     unsigned long novoIntervaloCalculado = valorIntervalo * multiplicador;
-
-    // Verificação de segurança
-    if (novoIntervaloCalculado < 10000) { // Aumentado para um mínimo de 10s
-      Serial.println("[AVISO] Intervalo calculado é muito baixo (< 10s). Usando valor padrão.");
-      varConfigIntervalo = intervaloMinimoLubrificacao;
-    } else {
-      varConfigIntervalo = novoIntervaloCalculado;
-    }
+    varConfigIntervalo = novoIntervaloCalculado;  
   }
 
   // Visualização para Debug (corrigido para mostrar a variável certa)
@@ -693,7 +689,7 @@ String formatarTimestamp(const DateTime& dt) {
 DateTime stringParaDateTime(const String& timestampStr) {
   int ano, mes, dia, hora, minuto, segundo;
   
-  // sscanf é uma função poderosa para extrair números de uma string formatada.
+  // sscanf é uma funçãopara extrair números de uma string formatada.
   // Ela lê a string e preenche as variáveis com os valores encontrados.
   sscanf(timestampStr.c_str(), "%d-%d-%dT%d:%d:%d", &ano, &mes, &dia, &hora, &minuto, &segundo);
   

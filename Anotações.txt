@@ -5,6 +5,10 @@ public enum CONFIGTYPE { BASICO, AVANCADO }
 public enum INTERVALTYPE {NONE, HORA, DIA, MES }
 
 -------------------------------------------------------------------------------------
+Data e hora ?
+
+Nivel de graxa ?
+
 Bluetooth:
 Quando tiver um trigger do app, o rasp vai ler esse trigger e enviar de volta no BLE as informações para o app ser preenchido (arquivo log.json e config.json)
 (Criar comando: e payload:)
@@ -39,11 +43,11 @@ Botão Manual:
 Pressionou, realiza a dosagem. Mas baseada em que ? Vai ter um parâmtetro no aplicativo da dosagem manual ?
 
 Modo Básico:
-Informa o Volume e o intervalo máximo, o programa faz o resto
+"Informa o Volume e o intervalo máximo, o programa faz o resto"
 -> Dosar com qual frequência ? 
 
 Modo Avançado:
-Informa o Volume por dosagem e a Intervalo que deseja realizar a dosagem
+"Informa o Volume por dosagem e a Intervalo que deseja realizar a dosagem"
 -> Mas o programa para quando ?
 
 -------------------------------------------------------------------------------------
@@ -115,3 +119,22 @@ Recebido JSON via BLE:{"Uuid":"00000000-0000-0000-0000-f008d1d4f4ea","Tag":"tag2
 }
 
 -------------------------------------------------------------------------------------
+
+
+graxa em grama
+basico = intervalo / volume -> graxando todo dia. Estipular um minimo para graxar, exemplo 1 grama
+
+tem encoder, a cada X pulsos 1 volta, criar variavel
+
+2,21 gramas por volta
+
+avançado = valor informado a cada x tempo informado
+
+economia de energia, esp acordar com o tempo ou com bluetooth
+
+motor:
+horario
+anti horario
+liga
+
+encoder no io 25

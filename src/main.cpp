@@ -46,8 +46,8 @@ unsigned long intervaloEnviarGateway = 15000;             // Frequência (em ms)
 
 #define LORA_TX_PIN 17 // Conecta ao pino RX do módulo LoRa.
 #define LORA_RX_PIN 16 // Conecta ao pino TX do módulo LoRa.
-#define SEN_NIVEL_1 4  // Sensor de nível baixo de lubrificante.
-#define SEN_NIVEL_2 5  // Sensor de nível crítico de lubrificante.
+#define SEN_NIVEL_BAIXO 4  // Sensor de nível baixo de lubrificante.
+#define SEN_NIVEL_CRITICO 5  // Sensor de nível crítico de lubrificante.
 #define MOTOR       32 // Pino que aciona o relé/driver do motor de lubrificação.
 #define BTN_MANUAL  19 // Botão para iniciar um ciclo de lubrificação manual.
 #define BTN_EXTRA   20 // Botão para funções futuras ou testes.
@@ -116,10 +116,11 @@ bool          aguardandoAck = false;      // Flag que indica se o dispositivo es
 unsigned long aguardandoAckDesde = 0;   // Registra quando a espera pelo ACK começou.
 const unsigned long TIMEOUT_ACK = 15000;  // Tempo máximo (em ms) de espera por um ACK.
 int           estadoAnteriorBtnManual = HIGH;  // Armazena o estado anterior do botão manual para detectar a borda de subida.
+int   estadoAnteriorNivelBaixo = HIGH;     // Armazena o último estado do sensor de nível baixo.
+int   estadoAnteriorNivelCritico = HIGH;     // Armazena o último estado do sensor de nível crítico.
 unsigned long ultimoAcionamentoBotaoManual = 0;    // Registra o tempo do último acionamento do botão manual.
 unsigned long ultimoAcionamentoBotao2 = 0;    // Registra o tempo do último acionamento do botão extra.
 const unsigned long intervaloBloqueio = 5000; // Intervalo de tempo (em ms) que um botão fica bloqueado após ser pressionado.
-
 
 // --- Comunicação Bluetooth (BLE) ---
 // Variáveis para a troca de dados entre o serviço BLE e o loop principal.
@@ -162,8 +163,8 @@ void setup() {
   // Configura os pinos do esp
   pinMode(BTN_MANUAL, INPUT_PULLUP);
   pinMode(BTN_EXTRA, INPUT_PULLUP);
-  pinMode(SEN_NIVEL_1, INPUT);
-  pinMode(SEN_NIVEL_2, INPUT);
+  pinMode(SEN_NIVEL_BAIXO, INPUT);
+  pinMode(SEN_NIVEL_CRITICO, INPUT);
   pinMode(MOTOR, OUTPUT);
 
   // Configura o RTC
@@ -303,6 +304,31 @@ void loop() {
     salvarConfig(bleReceivedValue.c_str());
   }
 
+  
+  //----------------------------------------------------------------------------------------------------------------------------------- 
+  // LEITURA DOS SENSORES DE NÍVEL
+  //-----------------------------------------------------------------------------------------------------------------------------------
+  // Lê o estado atual do sensor de nível 1 (baixo)
+  int estadoAtualNivelBaixo = digitalRead(SEN_NIVEL_BAIXO);
+  // Se o estado mudou de ALTO para BAIXO, significa que o nível caiu
+  if (estadoAtualNivelBaixo == LOW && estadoAnteriorNivelBaixo == HIGH) {
+    Serial.println("[ALERTA] Nível baixo de lubrificante detectado!");
+    // ADICIONAR LÓGICA FUTURAMENTE
+  }
+  // Atualiza o estado anterior para a próxima verificação
+  estadoAnteriorNivelBaixo = estadoAtualNivelBaixo;
+
+  // Lê o estado atual do sensor de nível 2 (crítico)
+  int estadoAtualNivelCritico = digitalRead(SEN_NIVEL_CRITICO);
+  // Se o estado mudou de ALTO para BAIXO, significa que o nível está crítico
+  if (estadoAtualNivelCritico == LOW && estadoAnteriorNivelCritico == HIGH) {
+    Serial.println("[ALERTA CRÍTICO] Nível crítico de lubrificante detectado!");
+    // ADICIONAR LÓGICA FUTURAMENTE
+  }
+  // Atualiza o estado anterior para a próxima verificação
+  estadoAnteriorNivelCritico = estadoAtualNivelCritico;
+  //-----------------------------------------------------------------------------------------------------------------------------------
+  
   //----------------------------------------------------------------------------------------------------------------------------------- 
   // Lógica para exibir os arquivos via Monitor Serial
   //-----------------------------------------------------------------------------------------------------------------------------------

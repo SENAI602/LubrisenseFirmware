@@ -15,7 +15,7 @@
 #include <SPIFFS.h>        // Gerenciador do sistema de arquivos na memória flash do ESP32.
 #include <ArduinoJson.h>   // Para codificar e decodificar dados no formato JSON.
 #include "RTClib.h"        // Driver para o módulo de Relógio de Tempo Real (RTC DS3231).
-#include <INA226.h>        // Leitura do nível de bateria
+#include <INA226.h>        // Leitura do INA226
 
 // ==========================================================================
 // --- CREDENCIAIS DE WI-FI (PARA SINCRONIZAÇÃO NTP) ---
@@ -44,17 +44,27 @@ unsigned long intervaloEnviarGateway = 15000;             // Frequência (em ms)
 // --- MAPEAMENTO DE PINOS (HARDWARE) ---
 // ==========================================================================
 
-#define LORA_TX_PIN 17 // Conecta ao pino RX do módulo LoRa.
-#define LORA_RX_PIN 16 // Conecta ao pino TX do módulo LoRa.
-#define SEN_NIVEL_BAIXO 4  // Sensor de nível baixo de lubrificante.
-#define SEN_NIVEL_CRITICO 5  // Sensor de nível crítico de lubrificante.
-#define MOTOR       32 // Pino que aciona o relé/driver do motor de lubrificação.
-#define BTN_MANUAL  19 // Botão para iniciar um ciclo de lubrificação manual.
-#define BTN_EXTRA   20 // Botão para funções futuras ou testes.
-#define I2C_SDA     22 // Pino de dados (SDA) para o RTC DS3231.
-#define I2C_SCL     23 // Pino de clock (SCL) para o RTC DS3231.
-#define PT100_PIN   34 // Pino ADC para ler a saída do conversor 4-20mA.
-INA226 ina226(0x40);   // <-- Cria o objeto com o endereço I2C correto
+#define LORA_TX_PIN         43 // Conecta ao pino RX do módulo LoRa.
+#define LORA_RX_PIN         44 // Conecta ao pino TX do módulo LoRa.
+#define SEN_NIVEL_BAIXO     5  // Sensor de nível baixo de lubrificante.
+#define SEN_NIVEL_ALTO      6  // Sensor de nível alto de lubrificante.
+#define MOTOR_IN1           38 // Pino de controle de direção 1
+#define MOTOR_IN2           21 // Pino de controle de direção 2
+#define MOTOR_EN            18 // Pino de habilitação (liga/desliga) do motor
+#define BTN_MANUAL          2 // Botão para iniciar um ciclo de lubrificação manual.
+#define BTN_EXTRA           4 // Botão para funções futuras ou testes.
+#define I2C_SDA             11 // Pino de dados (SDA) para o RTC DS3231.
+#define I2C_SCL             10 // Pino de clock (SCL) para o RTC DS3231.
+#define PT100_PIN           1  // Pino ADC para ler a saída do conversor 4-20mA.
+INA226 ina226Bateria    (0x40);// Endereço I2C -> Nível da bateria
+INA226 ina226Motor      (0x45); // Endereço I2C -> Nível do motor
+
+// ==========================================================================
+// --- CONSTANTES DE CORRENTE DO MOTOR ---
+// ==========================================================================
+
+const float CORRENTE_MINIMA_MOTOR = 50.0;   // Em mA. Se for menor que isso, o motor não está acoplado.
+const float CORRENTE_MAXIMA_MOTOR = 500.0;  // Em mA. Se for maior que isso, o motor está travado.
 
 // ==========================================================================
 // --- CONSTANTES PARA O SENSOR PT100 4-20mA ---
@@ -88,6 +98,7 @@ const long  gmtOffset_sec = -3 * 3600;        // Fuso horário de Brasília (GMT
 const int   daylightOffset_sec = 0;           // Ajuste para horário de verão (desativado).
 RTC_DS3231 rtc;                               // Cria o objeto que representa o módulo RTC DS3231.
 unsigned long ultimaSincronizacao = 0;        // Armazena o tempo (em millis) da última sincronização bem-sucedida.
+bool isClockValid = false;                    // Flag para garantir que o RTC tem uma hora válida.
 
 // ==========================================================================
 // --- VARIÁVEIS ---
@@ -116,11 +127,17 @@ bool          aguardandoAck = false;      // Flag que indica se o dispositivo es
 unsigned long aguardandoAckDesde = 0;   // Registra quando a espera pelo ACK começou.
 const unsigned long TIMEOUT_ACK = 15000;  // Tempo máximo (em ms) de espera por um ACK.
 int           estadoAnteriorBtnManual = HIGH;  // Armazena o estado anterior do botão manual para detectar a borda de subida.
-int   estadoAnteriorNivelBaixo = HIGH;     // Armazena o último estado do sensor de nível baixo.
-int   estadoAnteriorNivelCritico = HIGH;     // Armazena o último estado do sensor de nível crítico.
 unsigned long ultimoAcionamentoBotaoManual = 0;    // Registra o tempo do último acionamento do botão manual.
 unsigned long ultimoAcionamentoBotao2 = 0;    // Registra o tempo do último acionamento do botão extra.
 const unsigned long intervaloBloqueio = 5000; // Intervalo de tempo (em ms) que um botão fica bloqueado após ser pressionado.
+String fonteDoEventoAtual = "Nenhum";         // Diz qual foi o tipo do acionamento MANUAL / AUTOMÁTICO
+
+// --- Variáveis de Controle do Motor ---
+// Enum para definir a direção de rotação do motor de forma clara e segura
+enum DirecaoMotor { HORARIO, ANTI_HORARIO };   // Cria os sentidos do motor
+bool motorLigado = false;                      // Flag para saber se o motor está em movimento.
+unsigned long motorTempoFinal = 0;             // Armazena o "horário" (em millis) em que o motor deve parar.
+DirecaoMotor motorDirecaoAtual = HORARIO;      // Armazena a direção atual do movimento.
 
 // --- Comunicação Bluetooth (BLE) ---
 // Variáveis para a troca de dados entre o serviço BLE e o loop principal.
@@ -144,7 +161,7 @@ void loadInitialConfig();
 void salvarEstadoCiclo(bool cicloStartado, const String& horarioStartado, const String& ultimaLubrificacao);
 void carregarEstadoCiclo();
 void displayFileContent(const char* filename);
-void registrarEvento(const String& fonte);
+void registrarEvento(const String& fonte, bool sucesso);
 void tentarReenvio();
 void marcarEventoComoEnviado();
 String formatarTimestamp(const DateTime& dt);
@@ -164,8 +181,14 @@ void setup() {
   pinMode(BTN_MANUAL, INPUT_PULLUP);
   pinMode(BTN_EXTRA, INPUT_PULLUP);
   pinMode(SEN_NIVEL_BAIXO, INPUT);
-  pinMode(SEN_NIVEL_CRITICO, INPUT);
-  pinMode(MOTOR, OUTPUT);
+  pinMode(SEN_NIVEL_ALTO, INPUT);
+  pinMode(MOTOR_IN1, OUTPUT);
+  pinMode(MOTOR_IN2, OUTPUT);
+  pinMode(MOTOR_EN, OUTPUT);
+
+  digitalWrite(MOTOR_EN, LOW);
+  digitalWrite(MOTOR_IN1, LOW);
+  digitalWrite(MOTOR_IN2, LOW);
 
   // Configura o RTC
   Wire.begin(I2C_SDA, I2C_SCL);
@@ -181,6 +204,18 @@ void setup() {
   } else {
     Serial.println("RTC manteve a energia. A hora atual é:");
     ultimaSincronizacao = millis(); 
+  }
+
+  // Verificação da data/hora do RTC
+  DateTime agora = rtc.now();
+  if (agora.year() < 2024) { // Checa se o ano é inválido (ex: resetou para 1990)
+    Serial.println("\n[ERRO CRÍTICO] A HORA DO RTC É INVÁLIDA!");
+    Serial.println("Por favor, sincronize a hora via BLE. Reinicie com acesso à internet.");
+    isClockValid = false;
+  } else {
+    Serial.print("Hora do RTC validada: ");
+    Serial.println(formatarTimestamp(agora));
+    isClockValid = true;
   }
 
   // Prepara o sistema SPIFFS
@@ -204,12 +239,19 @@ void setup() {
   Serial.print("[OK] Módulo LoRa iniciado. ID Local: ");
   Serial.println(lora.localId);
 
-  // Inicia o sensor medidor de bateria INA226
-  ina226.begin();
-  if (!ina226.isConnected()) {
-    Serial.println("[ERRO] Falha ao encontrar o sensor INA226! Verifique a fiação.");
+  // Inicia os sensores INA226
+  ina226Bateria.begin();
+  if (!ina226Bateria.isConnected()) {
+    Serial.println("[ERRO] Falha ao encontrar o sensor INA226 da BATERIA!");
   } else {
-    Serial.println("[OK] Sensor INA226 encontrado e iniciado.");
+    Serial.println("[OK] Sensor INA226 da Bateria encontrado.");
+  }
+
+  ina226Motor.begin();
+  if (!ina226Motor.isConnected()) {
+    Serial.println("[ERRO] Falha ao encontrar o sensor INA226 do MOTOR!");
+  } else {
+    Serial.println("[OK] Sensor INA226 do Motor encontrado.");
   }
   
   // Inicia o BLE
@@ -226,26 +268,63 @@ void setup() {
 // --- LOOP ---
 // ==========================================================================
 void loop() {
+  //----------------------------------------------------------------------------------------------------------------------------------- 
+  // Lógica para exibir os arquivos via Monitor Serial
+  //-----------------------------------------------------------------------------------------------------------------------------------
+  if (Serial.available() > 0) {
+    char command = Serial.read();
+    if (command == 'c' || command == 'C') {
+      displayFileContent(CONFIG_FILE);
+    } else if (command == 'l' || command == 'L') {
+      displayFileContent(LOG_FILE);
+    } else if (command == 't' || command == 'T') {
+      displayFileContent(TEMP_FILE);
+    }
+  }
+
+  //----------------------------------------------------------------------------------------------------------------------------------- 
+  // Recebendo arquivo de config pelo Bluetooth
+  //-----------------------------------------------------------------------------------------------------------------------------------
+  if (newDataFromBLE) {
+    newDataFromBLE = false; // Reseta a flag para não processar de novo
+    Serial.println("\n[BLE] Novos dados recebidos via Bluetooth!");
+    
+    //INSERIR LÓGICA DO "COMANDO"
+    salvarConfig(bleReceivedValue.c_str());
+    
+  }
+
+  //----------------------------------------------------------------------------------------------------------------------------------- 
+  // Trava de segurança do RTC
+  // Se a flag isClockValid for falsa, a função loop é interrompida aqui e nada abaixo é executado.
+  //-----------------------------------------------------------------------------------------------------------------------------------
+  if (!isClockValid) {
+    return; // Pausa a execução da lógica principal. Precisa reiniciar o sistema para ajustar data/hora.
+  }
+
   //-----------------------------------------------------------------------------------------------------------------------------------  
   // CICLO MANUAL (BOTÃO)
   //-----------------------------------------------------------------------------------------------------------------------------------  
   // Lê o estado atual do botão Manual
   int estadoAtualBtnManual = digitalRead(BTN_MANUAL);
-  // Verifica se o botão FOI pressionado (transição de HIGH para LOW)
+  // Verifica se o botão foi pressionado (transição de HIGH para LOW)
   if (estadoAtualBtnManual == LOW && estadoAnteriorBtnManual == HIGH && (millis() - ultimoAcionamentoBotaoManual > intervaloBloqueio)){
     Serial.println("Botão manual pressionado!");
+    fonteDoEventoAtual = "Manual";
 
-    //  \/ LÓGICA DE DOSAGEM AQUI \/
-    digitalWrite(MOTOR, HIGH);
-    delay(500);
-    digitalWrite(MOTOR, LOW);
-    // ---
+
+
+    // FALTA FAZER: CALCULAR O TEMPO DO GIRO CONFORME OS PARÂMETROS DA CONFIGURAÇÃO DO APLICATIVO
+    // Inicia o movimento do motor no sentido horário    
+    iniciarMovimentoMotor(HORARIO, 1500); 
+
+
+
 
     // Salva o horario do ciclo atual para calcular quando será o próximo. Registra o evento no log como manual
     ultimoAcionamentoBotaoManual = millis(); // Atualiza o tempo do último acionamento
     String timestampAtual = formatarTimestamp(rtc.now());
     salvarEstadoCiclo(true,timestampAtual,timestampAtual);
-    registrarEvento("Manual");
   }
   // Atualiza o estado anterior para a próxima verificação nlo loop
   estadoAnteriorBtnManual = estadoAtualBtnManual;
@@ -267,81 +346,70 @@ void loop() {
 
       // Verifica se o tempo atual for maior ou igual ao tempo da última lubrificação + o intervalo...
       if (agora_ts >= (ultima_lub_ts + intervalo_s)) {
-        Serial.println("\n[CICLO AUTOMÁTICO] Tempo de lubrificação atingido!");       
+        Serial.println("\n[CICLO AUTOMÁTICO] Tempo de lubrificação atingido!");    
+        fonteDoEventoAtual = "Auto";   
 
         //Modo Básico
         if(varConfigTipoConfig==1){       
           Serial.println("\n[CICLO AUTOMÁTICO] Realizando dosagem no modo básico"); 
-          //  \/ LÓGICA DE DOSAGEM AQUI \/
-          digitalWrite(MOTOR, HIGH);
-          delay(500);
-          digitalWrite(MOTOR, LOW);
+          // FALTA FAZER: COLOCAR A LÓGICA PARA DOSAR CONFORME O COMBINADO DO MODO BÁSICO
+          // Inicia o movimento do motor no sentido horário
+          iniciarMovimentoMotor(HORARIO, 1500); 
 
         //Modo Avançado
         }else if (varConfigTipoConfig==2){ 
-          Serial.println("\n[CICLO AUTOMÁTICO] Realizando dosagem no modo avançado");        
-          //  \/ LÓGICA DE DOSAGEM AQUI \/
-          digitalWrite(MOTOR, HIGH);
-          delay(500);
-          digitalWrite(MOTOR, LOW);
+          Serial.println("\n[CICLO AUTOMÁTICO] Realizando dosagem no modo avançado");
+          // FALTA FAZER: COLOCAR A LÓGICA PARA DOSAR CONFORME O COMBINADO DO MODO AVANÇADO
+          // Inicia o movimento do motor no sentido horário
+          iniciarMovimentoMotor(HORARIO, 1500); 
         }
-        
-        // Escreve no arquivo log
-        registrarEvento("Auto");
+
         // Atualiza a variável da última lubrificação com a hora atual para reiniciar o timer
         varTempUltimaLubrificacao = formatarTimestamp(agora);          
         // Salva o novo estado no arquivo para que ele não se perca se o dispositivo reiniciar
         salvarEstadoCiclo(true, varTempHorarioStartado, varTempUltimaLubrificacao);
       }    
   }
-
-  //----------------------------------------------------------------------------------------------------------------------------------- 
-  // Recebendo arquivo de config pelo Bluetooth
-  //-----------------------------------------------------------------------------------------------------------------------------------
-  if (newDataFromBLE) {
-    newDataFromBLE = false; // Reseta a flag para não processar de novo
-    Serial.println("\n[BLE] Novos dados de configuração recebidos via Bluetooth!");
-    salvarConfig(bleReceivedValue.c_str());
-  }
-
   
   //----------------------------------------------------------------------------------------------------------------------------------- 
-  // LEITURA DOS SENSORES DE NÍVEL
+  // Salvar informações do motor e parar quando necessário
   //-----------------------------------------------------------------------------------------------------------------------------------
-  // Lê o estado atual do sensor de nível 1 (baixo)
-  int estadoAtualNivelBaixo = digitalRead(SEN_NIVEL_BAIXO);
-  // Se o estado mudou de ALTO para BAIXO, significa que o nível caiu
-  if (estadoAtualNivelBaixo == LOW && estadoAnteriorNivelBaixo == HIGH) {
-    Serial.println("[ALERTA] Nível baixo de lubrificante detectado!");
-    // ADICIONAR LÓGICA FUTURAMENTE
-  }
-  // Atualiza o estado anterior para a próxima verificação
-  estadoAnteriorNivelBaixo = estadoAtualNivelBaixo;
+  // Este bloco só é executado se um movimento do motor foi iniciado.
+  if (motorLigado) {
+    // 1. Verifica se os sensores de fim de curso foram atingidos
+    if ((motorDirecaoAtual == HORARIO && digitalRead(SEN_NIVEL_BAIXO) == LOW) ||
+        (motorDirecaoAtual == ANTI_HORARIO && digitalRead(SEN_NIVEL_ALTO) == LOW)) {
+      Serial.println("[MOTOR] Sensor de fim de curso atingido!");
+      pararMotor();
+      registrarEvento(fonteDoEventoAtual, false); // Registra o evento como falha
 
-  // Lê o estado atual do sensor de nível 2 (crítico)
-  int estadoAtualNivelCritico = digitalRead(SEN_NIVEL_CRITICO);
-  // Se o estado mudou de ALTO para BAIXO, significa que o nível está crítico
-  if (estadoAtualNivelCritico == LOW && estadoAnteriorNivelCritico == HIGH) {
-    Serial.println("[ALERTA CRÍTICO] Nível crítico de lubrificante detectado!");
-    // ADICIONAR LÓGICA FUTURAMENTE
-  }
-  // Atualiza o estado anterior para a próxima verificação
-  estadoAnteriorNivelCritico = estadoAtualNivelCritico;
-  //-----------------------------------------------------------------------------------------------------------------------------------
-  
-  //----------------------------------------------------------------------------------------------------------------------------------- 
-  // Lógica para exibir os arquivos via Monitor Serial
-  //-----------------------------------------------------------------------------------------------------------------------------------
-  if (Serial.available() > 0) {
-    char command = Serial.read();
-    if (command == 'c' || command == 'C') {
-      displayFileContent(CONFIG_FILE);
-    } else if (command == 'l' || command == 'L') {
-      displayFileContent(LOG_FILE);
-    } else if (command == 't' || command == 'T') {
-      displayFileContent(TEMP_FILE);
+    // 2. Verifica se o tempo de acionamento esgotou
+    } else if (millis() >= motorTempoFinal) {
+      Serial.println("[MOTOR] Tempo de acionamento esgotado.");
+      pararMotor();
+      
+      // ANTES de registrar, verifica a corrente para saber se foi sucesso
+      float corrente = ina226Motor.getCurrent_mA();
+      if (corrente < CORRENTE_MINIMA_MOTOR) {
+        Serial.println("[MOTOR] SUCESSO, mas com alerta de baixa corrente!");
+        registrarEvento(fonteDoEventoAtual, true); // Sucesso, mas pode indicar problema
+      } else {
+        registrarEvento(fonteDoEventoAtual, true); // Sucesso total
+      }
+    }
+    // 3. VERIFICAÇÃO DE SEGURANÇA CONTÍNUA
+    else {
+      float corrente = ina226Motor.getCurrent_mA();
+      if (corrente > CORRENTE_MAXIMA_MOTOR) {
+        Serial.println("[MOTOR] SOBRECARGA DETECTADA! Motor travado!");
+        pararMotor();
+        registrarEvento(fonteDoEventoAtual, false); // Registra o evento como falha
+      }
     }
   }
+
+  //-----------------------------------------------------------------------------------------------------------------------------------
+  
 
   // // Lógica de Recepção de Comandos LoRa
   // uint16_t senderId;
@@ -477,7 +545,7 @@ void salvarConfig(const char* json) {
 }
 
 // Regista a lubrificação no log.json
-void registrarEvento(const String& fonte) {
+void registrarEvento(const String& fonte, bool sucesso) {
   std::vector<String> lines;
   File readFile = SPIFFS.open(LOG_FILE, "r");
   if (readFile) {
@@ -494,7 +562,7 @@ void registrarEvento(const String& fonte) {
 
   JsonDocument doc;
   doc["Hora"] = formatarTimestamp(rtc.now());   // Data/Hora atual
-  doc["Sucesso"] = true;                        // FUTURAMENTE: Implementar a verificação do motor para garantir que tenha feito a lubrificação
+  doc["Sucesso"] = sucesso;                     // Indica se deu erro conforme valor do sensor INA226
   doc["Modo"] = fonte;                          // Manual ou Automático
   doc["Temperatura"] = lerTemperaturaPT100();   // Temperatura
   doc["Bateria"] = lerNivelBateria();           // Nivel da bateria
@@ -514,11 +582,11 @@ void registrarEvento(const String& fonte) {
   }
   writeFile.close();
 
-  Serial.print("[LOG] Novo evento registrado. O log agora contém ");
+  Serial.print("[LOG] Novo evento registrado. Sucesso: ");
+  Serial.print(sucesso ? "SIM" : "NÃO");
+  Serial.print(". O log agora contém ");
   Serial.print(lines.size());
   Serial.println(" linhas.");
-  Serial.print("   > Novo dado: ");
-  Serial.println(newLogLine);
 }
 
 // Tenta enviar a uma linha que ainda não foi enviada do arquivo log.json para o master
@@ -750,7 +818,7 @@ DateTime stringParaDateTime(const String& timestampStr) {
 
 int lerNivelBateria() {
   // getBusVoltage_V() retorna a voltagem diretamente em Volts
-  float voltagem = ina226.getBusVoltage();
+  float voltagem = ina226Bateria.getBusVoltage();
   // Mapeia a faixa de voltagem (3.2V a 4.2V) para a faixa de porcentagem (0 a 100)
   float porcentagem = ((voltagem - 3.2) / (4.2 - 3.2)) * 100.0;
 
@@ -784,4 +852,51 @@ float lerTemperaturaPT100() {
   if (temperatura > TEMP_MAX) temperatura = TEMP_MAX;
 
   return temperatura;
+}
+
+void pararMotor() {
+  // Usa o modo "freio" do L298HN para uma parada mais precisa
+  digitalWrite(MOTOR_IN1, LOW);
+  digitalWrite(MOTOR_IN2, LOW);
+  digitalWrite(MOTOR_EN, LOW);
+
+  motorLigado = false; // Atualiza a flag de estado
+  Serial.println("[MOTOR] Movimento interrompido.");
+}
+
+void iniciarMovimentoMotor(DirecaoMotor direcao, int duracao_ms) {
+  Serial.print("[MOTOR] Iniciando movimento no sentido ");
+  
+  motorDirecaoAtual = direcao; // Salva a direção atual
+
+  if (direcao == HORARIO) {
+    Serial.println("HORÁRIO...");
+    digitalWrite(MOTOR_IN1, HIGH);
+    digitalWrite(MOTOR_IN2, LOW);
+  } else if (direcao == ANTI_HORARIO){
+    Serial.println("ANTI-HORÁRIO...");
+    digitalWrite(MOTOR_IN1, LOW);
+    digitalWrite(MOTOR_IN2, HIGH);
+  }
+
+  // Verifica se o sensor de NÍVEL BAIXO está acionado (em LOW)
+  if (digitalRead(SEN_NIVEL_BAIXO) == LOW) {
+    Serial.println("[MOTOR] Motor não ligou, pois o sensor de NÍVEL BAIXO está acionado.");
+  }
+  // Se o primeiro não estiver, verifica se o sensor de NÍVEL ALTO está acionado
+  else if (digitalRead(SEN_NIVEL_ALTO) == LOW) {
+    Serial.println("[MOTOR] Motor não ligou, pois o sensor de NÍVEL ALTO está acionado.");
+  }
+  // Se NENHUM dos sensores estiver acionado, então é seguro ligar o motor
+  else {
+    Serial.println("[MOTOR] Sensores livres. Ligando o motor...");
+    
+    // Habilita o motor
+    digitalWrite(MOTOR_EN, HIGH);
+    
+    // Configura as variáveis de estado para o loop gerenciar
+    motorLigado = true;
+  }
+  
+  motorTempoFinal = millis() + duracao_ms;
 }

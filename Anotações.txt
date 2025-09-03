@@ -1,31 +1,73 @@
+-------------------------------------------------------------------------------------
+Dúvidas:
+
+
+Data e hora vindas do app ? 
+Por enquanto estão pegando do wifi, mas precisa colocar o wifi da empresa pelo código
+
+Bluetooth com "comando" ?
+
+
+Botão Manual:
+Pressionou, realiza a dosagem conforme a quantidade que está programada no config.json
+
+Modo Básico:
+Informa o Volume e o intervalo máximo, o programa faz o resto. No mínimo 1 dia e 2,21 gramas por volta
+
+Modo Avançado:
+Informa o Volume por dosagem e a Intervalo que deseja realizar a dosagem. Para quando chegar no sensor crítico
+
+-------------------------------------------------------------------------------------
 DEFINIÇÕES
 -------------------------------------------------------------------------------------
+Motor:
+Cronometrar 1 volta
+Escolher o sentido de rotação e ligar o motor
+(Deixar para mais pra frente, priorizar outras coisas agora)
 
+-------------------------------------------------------------------------------------
 public enum CONFIGTYPE { BASICO, AVANCADO }
 public enum INTERVALTYPE {NONE, HORA, DIA, MES }
 
--------------------------------------------------------------------------------------
-Data e hora ?
-
-Nivel de graxa ?
-
-Bluetooth:
-Quando tiver um trigger do app, o rasp vai ler esse trigger e enviar de volta no BLE as informações para o app ser preenchido (arquivo log.json e config.json)
-(Criar comando: e payload:)
 -----------------------------------
+
+
+
 {"comando": "get_log"}
 
+
+
+-----------------------------------
+
+
+
 {"comando": "get_config"}
+
+
+
+-----------------------------------
+
+
 
 {
   "comando": "set_config",
   "payload": {
-    "Uuid": "...",
-    "Tag": "...",
-    ...
+    "Uuid": "00000000-0000-0000-0000-e465b86f8ade",
+    "Tag": "1020068",
+    "Equipamento": "furadeira",
+    "Setor": "lubrificação",
+    "Lubrificante": "CL1000",
+    "TipoConfig": 0,
+    "TipoIntervalo": 2,
+    "Volume": 10,
+    "Intervalo": 10,
+    "UltimaConexao": "2025-08-01T11:05:05.2706065-03:00"
   }
 }
------------------------------------
+
+
+
+-------------------------------------------------------------------------------------
 if (comando == "get_log") {
       Serial.println("[BLE] Comando 'get_log' recebido. Enviando log.jsonl...");
       sendFileOverBLE(LOG_FILE);
@@ -37,18 +79,6 @@ if (comando == "get_log") {
     } else if (comando == "set_config") {
       Serial.println("[BLE] Comando 'set_config' recebido. Salvando nova configuração...");
       JsonObject payload = doc["payload"];
------------------------------------
-
-Botão Manual:
-Pressionou, realiza a dosagem. Mas baseada em que ? Vai ter um parâmtetro no aplicativo da dosagem manual ?
-
-Modo Básico:
-"Informa o Volume e o intervalo máximo, o programa faz o resto"
--> Dosar com qual frequência ? 
-
-Modo Avançado:
-"Informa o Volume por dosagem e a Intervalo que deseja realizar a dosagem"
--> Mas o programa para quando ?
 
 -------------------------------------------------------------------------------------
 

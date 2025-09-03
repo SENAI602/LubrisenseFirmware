@@ -63,7 +63,6 @@ INA226 ina226Motor      (0x45); // Endereço I2C -> Nível do motor
 // --- CONSTANTES DE CORRENTE DO MOTOR ---
 // ==========================================================================
 
-const float CORRENTE_MINIMA_MOTOR = 50.0;   // Em mA. Se for menor que isso, o motor não está acoplado.
 const float CORRENTE_MAXIMA_MOTOR = 500.0;  // Em mA. Se for maior que isso, o motor está travado.
 
 // ==========================================================================
@@ -326,8 +325,9 @@ void loop() {
     String timestampAtual = formatarTimestamp(rtc.now());
     salvarEstadoCiclo(true,timestampAtual,timestampAtual);
   }
-  // Atualiza o estado anterior para a próxima verificação nlo loop
+  // Atualiza o estado anterior para a próxima verificação no loop
   estadoAnteriorBtnManual = estadoAtualBtnManual;
+  
   //----------------------------------------------------------------------------------------------------------------------------------- 
   // CICLO AUTOMÁTICO
   //-----------------------------------------------------------------------------------------------------------------------------------
@@ -372,40 +372,34 @@ void loop() {
   }
   
   //----------------------------------------------------------------------------------------------------------------------------------- 
-  // Salvar informações do motor e parar quando necessário
+  // Lógica para quando o motor estiver em funcionamento
   //-----------------------------------------------------------------------------------------------------------------------------------
-  // Este bloco só é executado se um movimento do motor foi iniciado.
   if (motorLigado) {
     // 1. Verifica se os sensores de fim de curso foram atingidos
-    if ((motorDirecaoAtual == HORARIO && digitalRead(SEN_NIVEL_BAIXO) == LOW) ||
-        (motorDirecaoAtual == ANTI_HORARIO && digitalRead(SEN_NIVEL_ALTO) == LOW)) {
-      Serial.println("[MOTOR] Sensor de fim de curso atingido!");
+    if (motorDirecaoAtual == HORARIO && digitalRead(SEN_NIVEL_BAIXO) == LOW){
+      Serial.println("[MOTOR] Sensor de baixo nível atingido!");
       pararMotor();
-      registrarEvento(fonteDoEventoAtual, false); // Registra o evento como falha
-
-    // 2. Verifica se o tempo de acionamento esgotou
-    } else if (millis() >= motorTempoFinal) {
-      Serial.println("[MOTOR] Tempo de acionamento esgotado.");
-      pararMotor();
-      
-      // ANTES de registrar, verifica a corrente para saber se foi sucesso
-      float corrente = ina226Motor.getCurrent_mA();
-      if (corrente < CORRENTE_MINIMA_MOTOR) {
-        Serial.println("[MOTOR] SUCESSO, mas com alerta de baixa corrente!");
-        registrarEvento(fonteDoEventoAtual, true); // Sucesso, mas pode indicar problema
-      } else {
-        registrarEvento(fonteDoEventoAtual, true); // Sucesso total
-      }
+      registrarEvento(fonteDoEventoAtual, false); //Registra a lubrificação como falha
     }
-    // 3. VERIFICAÇÃO DE SEGURANÇA CONTÍNUA
-    else {
-      float corrente = ina226Motor.getCurrent_mA();
-      if (corrente > CORRENTE_MAXIMA_MOTOR) {
+    if (motorDirecaoAtual == ANTI_HORARIO && digitalRead(SEN_NIVEL_ALTO) == LOW) { 
+      Serial.println("[MOTOR] Sensor de alto nível atingido!");
+      pararMotor();
+    }
+
+    // 2. Verificação contínua do valor da corrente
+    float corrente = ina226Motor.getCurrent_mA();
+    if (corrente > CORRENTE_MAXIMA_MOTOR) {
         Serial.println("[MOTOR] SOBRECARGA DETECTADA! Motor travado!");
         pararMotor();
         registrarEvento(fonteDoEventoAtual, false); // Registra o evento como falha
-      }
-    }
+    }  
+    
+    // 3. Verifica se o tempo de acionamento esgotou
+    if (millis() >= motorTempoFinal) {
+      Serial.println("[MOTOR] Tempo de acionamento esgotado.");
+      pararMotor();
+      registrarEvento(fonteDoEventoAtual, true); // Sucesso total
+    }  
   }
 
   //-----------------------------------------------------------------------------------------------------------------------------------

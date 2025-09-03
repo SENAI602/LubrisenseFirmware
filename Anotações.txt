@@ -79,6 +79,7 @@ if (comando == "get_log") {
     } else if (comando == "set_config") {
       Serial.println("[BLE] Comando 'set_config' recebido. Salvando nova configuração...");
       JsonObject payload = doc["payload"];
+    }
 
 -------------------------------------------------------------------------------------
 

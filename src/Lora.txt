@@ -1,0 +1,37 @@
+  //-----------------------------------------------------------------------------------------------------------------------------------
+  
+
+  // // Lógica de Recepção de Comandos LoRa
+  // uint16_t senderId;
+  // uint8_t receivedCommand;
+  // uint8_t payload[MAX_PAYLOAD_SIZE];
+  // uint8_t payloadSize;
+
+  // if (lora.ReceivePacketCommand(&senderId, &receivedCommand, payload, &payloadSize, 100)) {
+  //   payload[payloadSize] = '\0';
+  //   String msg = (char*)payload;
+  //   Serial.print("[LORA] Comando recebido do ID ");
+  //   Serial.print(senderId);
+  //   Serial.print(" - CMD: 0x");
+  //   Serial.print(receivedCommand, HEX);
+  //   Serial.print(" - Payload: ");
+  //   Serial.println(msg);
+
+  //   switch (receivedCommand) {
+  //     case CMD_FROM_MASTER_ACK:
+  //       marcarEventoComoEnviado();
+  //       break;
+  //     case CMD_FROM_MASTER_CONFIG:
+  //       salvarConfig(msg.c_str());
+  //       break;
+  //     default:
+  //       Serial.println("[AVISO] Comando LoRa desconhecido.");
+  //       break;
+  //   }
+  // }
+  
+  // // Lógica de Reenvio de Eventos
+  // if (millis() - ultimoReenvio > intervaloEnviarGateway) {
+  //   tentarReenvio();
+  //   ultimoReenvio = millis();
+  // }

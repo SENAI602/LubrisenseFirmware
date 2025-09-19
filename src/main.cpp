@@ -130,6 +130,7 @@ unsigned long ultimoAcionamentoBotaoManual = 0;    // Registra o tempo do últim
 unsigned long ultimoAcionamentoBotao2 = 0;    // Registra o tempo do último acionamento do botão extra.
 const unsigned long intervaloBloqueio = 5000; // Intervalo de tempo (em ms) que um botão fica bloqueado após ser pressionado.
 String fonteDoEventoAtual = "Nenhum";         // Diz qual foi o tipo do acionamento MANUAL / AUTOMÁTICO
+int VarDosagemManualBasico;                   // Dosagem calculado para o modo básico
 
 // --- Variáveis de Controle do Motor ---
 // Enum para definir a direção de rotação do motor de forma clara e segura
@@ -282,15 +283,49 @@ void loop() {
   }
 
   //----------------------------------------------------------------------------------------------------------------------------------- 
-  // Recebendo arquivo de config pelo Bluetooth
+  // Recebendo e processando comandos via Bluetooth
   //-----------------------------------------------------------------------------------------------------------------------------------
   if (newDataFromBLE) {
-    newDataFromBLE = false; // Reseta a flag para não processar de novo
-    Serial.println("\n[BLE] Novos dados recebidos via Bluetooth!");
-    
-    //INSERIR LÓGICA DO "COMANDO"
-    salvarConfig(bleReceivedValue.c_str());
-    
+    newDataFromBLE = false; // Reseta a flag
+    Serial.println("\n[BLE] Novo comando recebido via Bluetooth!");
+    Serial.print("  > Raw: ");
+    Serial.println(bleReceivedValue);
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, bleReceivedValue);
+
+    if (error) {
+      Serial.println("[BLE] ERRO: Falha ao interpretar o JSON do comando.");
+      updateBLE("ERRO: JSON invalido.");
+      return; // Sai da lógica se o JSON estiver mal formatado
+    }
+
+    // Extrai o comando do JSON. Se não existir, será uma string vazia.
+    String comando = doc["comando"] | "";
+
+    if (comando == "set_config") {
+      Serial.println("[BLE] Comando 'set_config' recebido. Salvando nova configuração...");
+      
+      // Pega apenas o objeto "payload" de dentro do JSON recebido
+      JsonObject payload = doc["payload"];
+      
+      if (payload.isNull()) {
+        Serial.println("[BLE] ERRO: Comando 'set_config' recebido sem 'payload'.");
+        updateBLE("ERRO: 'payload' ausente.");
+      } else {
+        // Converte o payload de volta para uma string para usar a função de salvar existente
+        String payloadStr;
+        serializeJson(payload, payloadStr);
+        salvarConfig(payloadStr.c_str());
+        updateBLE("OK: Configuracao recebida."); // Envia uma confirmação de sucesso
+      }
+
+    } else {
+      Serial.print("[BLE] ERRO: Comando desconhecido recebido: '");
+      Serial.print(comando);
+      Serial.println("'");
+      updateBLE("ERRO: Comando desconhecido.");
+    }
   }
 
   //----------------------------------------------------------------------------------------------------------------------------------- 
@@ -313,9 +348,32 @@ void loop() {
 
 
 
-    // FALTA FAZER: CALCULAR O TEMPO DO GIRO CONFORME OS PARÂMETROS DA CONFIGURAÇÃO DO APLICATIVO
-    // Inicia o movimento do motor no sentido horário    
-    iniciarMovimentoMotor(HORARIO, 1500); 
+
+
+
+
+
+    //Modo Básico => Informa o Volume e o intervalo máximo
+    if(varConfigTipoConfig==1){       
+      VarDosagemManualBasico = varConfigVolume / varConfigIntervalo; // Dividindo grama por milisegundos
+      Serial.println("\n[CICLO MANUAL] Realizando dosagem no modo básico"); 
+      // FALTA FAZER: CALCULAR O TEMPO DO GIRO CONFORME OS PARÂMETROS DA CONFIGURAÇÃO DO APLICATIVO
+      // Inicia o movimento do motor no sentido horário    
+      iniciarMovimentoMotor(HORARIO, 1500); 
+
+    //Modo Avançado
+    }else if (varConfigTipoConfig==2){ 
+      varConfigVolume;
+      Serial.println("\n[CICLO AUTOMÁTICO] Realizando dosagem no modo avançado");
+      // FALTA FAZER: CALCULAR O TEMPO DO GIRO CONFORME OS PARÂMETROS DA CONFIGURAÇÃO DO APLICATIVO
+      // Inicia o movimento do motor no sentido horário    
+      iniciarMovimentoMotor(HORARIO, 1500);
+    }
+
+
+
+
+
 
 
 
@@ -402,43 +460,7 @@ void loop() {
     }  
   }
 
-  //-----------------------------------------------------------------------------------------------------------------------------------
-  
 
-  // // Lógica de Recepção de Comandos LoRa
-  // uint16_t senderId;
-  // uint8_t receivedCommand;
-  // uint8_t payload[MAX_PAYLOAD_SIZE];
-  // uint8_t payloadSize;
-
-  // if (lora.ReceivePacketCommand(&senderId, &receivedCommand, payload, &payloadSize, 100)) {
-  //   payload[payloadSize] = '\0';
-  //   String msg = (char*)payload;
-  //   Serial.print("[LORA] Comando recebido do ID ");
-  //   Serial.print(senderId);
-  //   Serial.print(" - CMD: 0x");
-  //   Serial.print(receivedCommand, HEX);
-  //   Serial.print(" - Payload: ");
-  //   Serial.println(msg);
-
-  //   switch (receivedCommand) {
-  //     case CMD_FROM_MASTER_ACK:
-  //       marcarEventoComoEnviado();
-  //       break;
-  //     case CMD_FROM_MASTER_CONFIG:
-  //       salvarConfig(msg.c_str());
-  //       break;
-  //     default:
-  //       Serial.println("[AVISO] Comando LoRa desconhecido.");
-  //       break;
-  //   }
-  // }
-  
-  // // Lógica de Reenvio de Eventos
-  // if (millis() - ultimoReenvio > intervaloEnviarGateway) {
-  //   tentarReenvio();
-  //   ultimoReenvio = millis();
-  // }
 }
 
 // Envia o json para o master
@@ -505,6 +527,7 @@ void salvarConfig(const char* json) {
     unsigned long valorIntervalo = doc["Intervalo"].as<unsigned long>();
     unsigned long multiplicador = 1000; // Padrão é segundos
 
+    //Converte para milisegundos
     switch (varConfigTipoIntervalo) {
       case 1: // Hora
         multiplicador = 3600000UL;
@@ -521,7 +544,7 @@ void salvarConfig(const char* json) {
     }
 
     unsigned long novoIntervaloCalculado = valorIntervalo * multiplicador;
-    varConfigIntervalo = novoIntervaloCalculado;  
+    varConfigIntervalo = novoIntervaloCalculado; // em milisegundos 
   }
 
   // Visualização para Debug (corrigido para mostrar a variável certa)

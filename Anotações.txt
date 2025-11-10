@@ -37,16 +37,16 @@ public enum INTERVALTYPE {NONE, HORA, DIA, MES }
 {
   "comando": "set_config",
   "payload": {
-    "Uuid": "00000000-0000-0000-0000-e465b86f8ade",
-    "Tag": "1020068",
-    "Equipamento": "furadeira",
-    "Setor": "lubrificação",
-    "Lubrificante": "CL1000",
-    "TipoConfig": 0,
-    "TipoIntervalo": 2,
-    "Volume": 10,
+    "Uuid": "uuid-do-dispositivo-12345",
+    "Tag": "PONTO-01",
+    "Equipamento": "MOTOR-PRINCIPAL",
+    "TipoConfig": 1,
+    "Volume": 500,
     "Intervalo": 10,
-    "UltimaConexao": "2025-08-01T11:05:05.2706065-03:00"
+    "TipoIntervalo": 3,
+    "Frequencia": 5,
+    "TipoFrequencia": 2,
+    "UltimaConexao": "2025-11-10T08:30:00"
   }
 }
 

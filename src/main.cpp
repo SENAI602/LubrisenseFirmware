@@ -9,13 +9,14 @@
 #include <Arduino.h>       // Framework principal do Arduino para ESP32.
 #include <vector>          // Biblioteca C++ para usar listas dinâmicas (vetores).
 #include "LoRaMESH.h"      // Driver para o módulo de rádio LoRa em modo Mesh.
-#include "BleService.h"    // Módulo personalizado para o serviço Bluetooth Low Energy (BLE).
+#include <BleService.h>    // Módulo personalizado para o serviço Bluetooth Low Energy (BLE).
 #include <WiFi.h>          // Gerenciamento de conexão Wi-Fi para sincronização de tempo.
 #include <Wire.h>          // Protocolo de comunicação I2C, usado pelo módulo RTC.
 #include <SPIFFS.h>        // Gerenciador do sistema de arquivos na memória flash do ESP32.
 #include <ArduinoJson.h>   // Para codificar e decodificar dados no formato JSON.
 #include "RTClib.h"        // Driver para o módulo de Relógio de Tempo Real (RTC DS3231).
 #include <INA226.h>        // Leitura do INA226
+#include <MotorEncoder.h>  // <-- Inclui a biblioteca da pasta lib/
 
 // ==========================================================================
 // --- CREDENCIAIS DE WI-FI (PARA SINCRONIZAÇÃO NTP) ---
@@ -24,7 +25,7 @@
 // e sincronizar o relógio do módulo RTC com um servidor de tempo mundial (NTP).
 // Após a sincronização, o Wi-Fi é desligado.
 // ==========================================================================
-const char* ssid = "Leonardo2";      // Nome da rede Wi-Fi (SSID).
+const char* ssid = "Leonardo";      // Nome da rede Wi-Fi (SSID).
 const char* password = "senaisp602"; // Senha da rede Wi-Fi.
 
 // ==========================================================================
@@ -38,40 +39,61 @@ const char* password = "senaisp602"; // Senha da rede Wi-Fi.
 
 // --- Parâmetros de Funcionamento ---
 const size_t limiteLinhasLog = 10;                        // Define o número máximo de registros a serem mantidos no log.jsonl.
-unsigned long intervaloEnviarGateway = 15000;             // Frequência (em ms) com que o dispositivo tenta enviar logs pendentes.
+unsigned long intervaloEnviarGateway = 30000;             // Frequência (em ms) com que o dispositivo tenta enviar logs pendentes.
 
 // ==========================================================================
 // --- MAPEAMENTO DE PINOS (HARDWARE) ---
 // ==========================================================================
 
-#define LORA_TX_PIN         43 // Conecta ao pino RX do módulo LoRa.
-#define LORA_RX_PIN         44 // Conecta ao pino TX do módulo LoRa.
-#define SEN_NIVEL_BAIXO     5  // Sensor de nível baixo de lubrificante.
-#define SEN_NIVEL_ALTO      6  // Sensor de nível alto de lubrificante.
-#define MOTOR_IN1           38 // Pino de controle de direção 1
-#define MOTOR_IN2           21 // Pino de controle de direção 2
-#define MOTOR_EN            18 // Pino de habilitação (liga/desliga) do motor
-#define BTN_MANUAL          2 // Botão para iniciar um ciclo de lubrificação manual.
-#define BTN_EXTRA           4 // Botão para funções futuras ou testes.
-#define I2C_SDA             11 // Pino de dados (SDA) para o RTC DS3231.
-#define I2C_SCL             10 // Pino de clock (SCL) para o RTC DS3231.
-#define PT100_PIN           1  // Pino ADC para ler a saída do conversor 4-20mA.
-INA226 ina226Bateria    (0x40);// Endereço I2C -> Nível da bateria
-INA226 ina226Motor      (0x45); // Endereço I2C -> Nível do motor
+#define LORA_TX_PIN         43  // Conecta ao pino RX do módulo LoRa.
+#define LORA_RX_PIN         44  // Conecta ao pino TX do módulo LoRa.
+#define SEN_NIVEL_BAIXO     5   // Sensor de nível baixo de lubrificante.
+#define SEN_NIVEL_ALTO      6   // Sensor de nível alto de lubrificante.
+#define MOTOR_IN1           21  // Pino de controle de direção 1
+#define MOTOR_IN2           18  // Pino de controle de direção 2
+#define MOTOR_EN            38  // Pino de habilitação (liga/desliga) do motor
+#define ENCODER_PIN_A 15        // Pino do enconder A
+#define ENCODER_PIN_B 16        // Pino do encoder B
+#define BTN_MANUAL          2   // Botão para iniciar um ciclo de lubrificação manual.
+//#define BTN_EXTRA           4 // Botão para funções futuras ou testes.
+#define I2C_SDA             11  // Pino de dados (SDA) para o RTC DS3231.
+#define I2C_SCL             10  // Pino de clock (SCL) para o RTC DS3231.
+#define PT100_PIN           1   // Pino ADC para ler a saída do conversor 4-20mA.
 
 // ==========================================================================
-// --- CONSTANTES DE CORRENTE DO MOTOR ---
+// --- ENDEREÇAMENTO DO INA226 (Monitoramento de corrente) ---
+// ==========================================================================
+INA226 ina226Bateria    (0x40); // Endereço I2C -> Nível da bateria
+INA226 ina226Motor      (0x41); // Endereço I2C -> Nível do motor
+
+// ==========================================================================
+// --- CONSTANTES DO MOTOR ---
 // ==========================================================================
 
-const float CORRENTE_MAXIMA_MOTOR = 500.0;  // Em mA. Se for maior que isso, o motor está travado.
+const float CORRENTE_MAXIMA_MOTOR = 2000.0;  // Em mA. Se for maior que isso, o motor está travado
+const float SHUNT_MOTOR_OHMS = 0.02;  // Resistencia do resistor shutn
+const int VELOCIDADE_MOTOR = 60; // Velocidade PWM (0-255)
+const long PULSOS_PARA_UMA_VOLTA = 5650;  // Na teoria é 16 x 369 = 5904. Porém, isso passa de uma volta
+const float GRAMAS_POR_VOLTA = 2.21; // Quantas gramas o sistema dosa por 1 volta
+
+// --- Cria o Objeto Motor ---
+MotorEncoder Motor(
+  ENCODER_PIN_A, 
+  ENCODER_PIN_B, 
+  MOTOR_EN, 
+  MOTOR_IN1, 
+  MOTOR_IN2
+);
 
 // ==========================================================================
 // --- CONSTANTES PARA O SENSOR PT100 4-20mA ---
 // ==========================================================================
 
-const float R_SHUNT = 249.0;      // Valor do resistor de precisão (R11) em Ohms.
-const float TEMP_MIN = 0.0;       // Temperatura correspondente a 4mA (conforme o transmissor).
-const float TEMP_MAX = 150.0;     // Temperatura correspondente a 20mA (conforme o transmissor).
+const float R_SHUNT = 249.0;      // Valor do resistor de precisão (R11) em Ohms. // PROVAVELMENTE EXCLUIR: 
+const float TEMP_MIN = 0.0;           // Temperatura correspondente a 4mA (conforme o transmissor).
+const float TEMP_MAX = 150.0;         // Temperatura correspondente a 20mA (conforme o transmissor).
+#define FATOR_CONVERSAO_PT100 100.0   // (1.0 * 100) (resistor x ganho) (Para o WK IntegrateWise => 8,25 X 25)
+#define NUM_AMOSTRAS_ADC 20           // Número de amostras da leitura de temperatura
 
 // ==========================================================================
 // --- CONFIGURAÇÕES DO LORA ---
@@ -113,7 +135,12 @@ int    varConfigTipoConfig = 0;
 int    varConfigTipoIntervalo = 0;
 int    varConfigVolume = 10;          
 unsigned long varConfigIntervalo = 0; 
+unsigned long varConfigValorIntervalo = 0; 
+int varConfigFrequencia = 0;      // Valor da Frequência (ex: 5)
+int varConfigTipoFrequencia = 0;  // Unidade da Frequência (ex: 2=Dia)
+unsigned long varConfigIntervaloTrigger_ms = 0; // Frequência em MS (ex: 5 dias em ms)
 String varConfigUltimaConexao = "";
+bool configExiste = false;
 
 // Variaveis do arquivo temp.json
 bool   varTempCicloStartado = false;      // Indica se um ciclo (manual ou automático) está ativo.
@@ -134,10 +161,9 @@ int VarDosagemManualBasico;                   // Dosagem calculado para o modo b
 
 // --- Variáveis de Controle do Motor ---
 // Enum para definir a direção de rotação do motor de forma clara e segura
-enum DirecaoMotor { HORARIO, ANTI_HORARIO };   // Cria os sentidos do motor
 bool motorLigado = false;                      // Flag para saber se o motor está em movimento.
 unsigned long motorTempoFinal = 0;             // Armazena o "horário" (em millis) em que o motor deve parar.
-DirecaoMotor motorDirecaoAtual = HORARIO;      // Armazena a direção atual do movimento.
+Sentido motorDirecaoAtual = HORARIO;          // Armazena a direção atual do movimento.
 
 // --- Comunicação Bluetooth (BLE) ---
 // Variáveis para a troca de dados entre o serviço BLE e o loop principal.
@@ -157,16 +183,20 @@ String        bleReceivedValue = "";      // Armazena a string de configuração
 void sendJsonViaLoRa(const String &json, uint8_t command);
 bool sincronizarViaNTP();
 void salvarConfig(const char* json);
-void loadInitialConfig();
+void inicializaConfig();
 void salvarEstadoCiclo(bool cicloStartado, const String& horarioStartado, const String& ultimaLubrificacao);
-void carregarEstadoCiclo();
+void inicializarArquivoTemp();
 void displayFileContent(const char* filename);
 void registrarEvento(const String& fonte, bool sucesso);
 void tentarReenvio();
 void marcarEventoComoEnviado();
 String formatarTimestamp(const DateTime& dt);
 DateTime stringParaDateTime(const String& timestampStr);
-
+float converterParaDias(unsigned long valor, int tipo);
+void iniciarMovimentoMotor(float gramas, Sentido direcao);
+void pararMotor();
+int lerNivelBateria();
+float lerTemperaturaPT100();
 // =======================================================================================================================================
 
 // ==========================================================================
@@ -179,7 +209,7 @@ void setup() {
 
   // Configura os pinos do esp
   pinMode(BTN_MANUAL, INPUT_PULLUP);
-  pinMode(BTN_EXTRA, INPUT_PULLUP);
+  //pinMode(BTN_EXTRA, INPUT_PULLUP);
   pinMode(SEN_NIVEL_BAIXO, INPUT);
   pinMode(SEN_NIVEL_ALTO, INPUT);
   pinMode(MOTOR_IN1, OUTPUT);
@@ -226,10 +256,10 @@ void setup() {
   Serial.println("[OK] Sistema de arquivos montado.");
   
   // Carrega o arquivo config assim que o esp liga
-  loadInitialConfig();
+  inicializaConfig();
 
   // Carrega o arquivo temp assim que o esp liga
-  carregarEstadoCiclo();
+  inicializarArquivoTemp();
 
   //Preparação do Lora
   LoRaSerial.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
@@ -253,6 +283,13 @@ void setup() {
   } else {
     Serial.println("[OK] Sensor INA226 do Motor encontrado.");
   }
+  ina226Motor.reset();
+  ina226Motor.setAverage(128); // Média de 4 amostras
+  ina226Motor.setBusVoltageConversionTime(3); 
+  ina226Motor.setShuntVoltageConversionTime(3);
+
+  // Passa os parâmetros de calibração para a biblioteca
+  Motor.begin(PULSOS_PARA_UMA_VOLTA, GRAMAS_POR_VOLTA);
   
   // Inicia o BLE
   Serial.println("Iniciando ESP32 com BLE...");
@@ -260,9 +297,49 @@ void setup() {
 
   Serial.println("\n--- [SLAVE] Inicializado EndPoint com LoRa e BLE ---");
   Serial.println("--- Envie 'c' para ver config.json, 'l' para ver log.jsonl ou 't' oara ver o temp.json ---");
+
+  if (configExiste == false){
+    Serial.println("\nARQUIVO DE CONFIGURAÇÃO NÃO CRIADO");
+  }
 }
 
 // =======================================================================================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // ==========================================================================
 // --- LOOP ---
@@ -336,132 +413,174 @@ void loop() {
     return; // Pausa a execução da lógica principal. Precisa reiniciar o sistema para ajustar data/hora.
   }
 
-  //-----------------------------------------------------------------------------------------------------------------------------------  
+  // --- Variável de cálculo da dose ---
+  float dosagemCalculada = 0.0f;
+
+  // --- Lógica de Cálculo da Dose (antes dos ciclos) ---
+  // Define a 'dosagemCalculada' com base no modo
+  if (configExiste) {
+    if (varConfigTipoConfig == 1) { // MODO BÁSICO (Rateio)
+      // Ex: 10 Meses (em dias) / 5 Dias (em dias) = 60 doses
+      float duracaoTotalEmDias = converterParaDias(varConfigValorIntervalo, varConfigTipoIntervalo);
+      float frequenciaEmDias = converterParaDias(varConfigFrequencia, varConfigTipoFrequencia);
+
+      if (frequenciaEmDias > 0) { // Evita divisão por zero
+        float totalDoses = duracaoTotalEmDias / frequenciaEmDias;
+        if (totalDoses > 0) { // Evita divisão por zero
+          dosagemCalculada = (float)varConfigVolume / totalDoses; // Ex: 500g / 60 doses
+        }
+      }
+      
+    } else if (varConfigTipoConfig == 2) { // MODO AVANÇADO (Dose Fixa)
+      dosagemCalculada = (float)varConfigVolume; // Ex: 10g
+    }
+  }
+
+  //-----------------------------------------------------------------------------------------------------------------------------------  
   // CICLO MANUAL (BOTÃO)
-  //-----------------------------------------------------------------------------------------------------------------------------------  
-  // Lê o estado atual do botão Manual
+  //-----------------------------------------------------------------------------------------------------------------------------------  
   int estadoAtualBtnManual = digitalRead(BTN_MANUAL);
-  // Verifica se o botão foi pressionado (transição de HIGH para LOW)
-  if (estadoAtualBtnManual == LOW && estadoAnteriorBtnManual == HIGH && (millis() - ultimoAcionamentoBotaoManual > intervaloBloqueio)){
+  if (configExiste == true && estadoAtualBtnManual == LOW && estadoAnteriorBtnManual == HIGH && (millis() - ultimoAcionamentoBotaoManual > intervaloBloqueio)){
     Serial.println("Botão manual pressionado!");
     fonteDoEventoAtual = "Manual";
 
-
-
-
-
-
-
-
-    //Modo Básico => Informa o Volume e o intervalo máximo
-    if(varConfigTipoConfig==1){       
-      VarDosagemManualBasico = varConfigVolume / varConfigIntervalo; // Dividindo grama por milisegundos
-      Serial.println("\n[CICLO MANUAL] Realizando dosagem no modo básico"); 
-      // FALTA FAZER: CALCULAR O TEMPO DO GIRO CONFORME OS PARÂMETROS DA CONFIGURAÇÃO DO APLICATIVO
-      // Inicia o movimento do motor no sentido horário    
-      iniciarMovimentoMotor(HORARIO, 1500); 
-
-    //Modo Avançado
-    }else if (varConfigTipoConfig==2){ 
-      varConfigVolume;
-      Serial.println("\n[CICLO AUTOMÁTICO] Realizando dosagem no modo avançado");
-      // FALTA FAZER: CALCULAR O TEMPO DO GIRO CONFORME OS PARÂMETROS DA CONFIGURAÇÃO DO APLICATIVO
-      // Inicia o movimento do motor no sentido horário    
-      iniciarMovimentoMotor(HORARIO, 1500);
+    if (dosagemCalculada > 0) {
+      Serial.print("\n[CICLO MANUAL] Iniciando dosagem de ");
+      Serial.print(dosagemCalculada, 3); // Imprime com 3 casas decimais
+      Serial.println(" g.");
+      iniciarMovimentoMotor(dosagemCalculada, HORARIO);
+    } else {
+      Serial.println("[ERRO] Dosagem calculada é zero. Verifique a configuração.");
     }
 
-
-
-
-
-
-
-
-
-    // Salva o horario do ciclo atual para calcular quando será o próximo. Registra o evento no log como manual
-    ultimoAcionamentoBotaoManual = millis(); // Atualiza o tempo do último acionamento
+    // Salva o horario do ciclo atual...
+    ultimoAcionamentoBotaoManual = millis();
     String timestampAtual = formatarTimestamp(rtc.now());
     salvarEstadoCiclo(true,timestampAtual,timestampAtual);
   }
-  // Atualiza o estado anterior para a próxima verificação no loop
   estadoAnteriorBtnManual = estadoAtualBtnManual;
   
   //----------------------------------------------------------------------------------------------------------------------------------- 
   // CICLO AUTOMÁTICO
   //-----------------------------------------------------------------------------------------------------------------------------------
-  // Verifica se a variável está como true. Pois, o ciclo automático só começa a contar depois que houver a primeira dosagem manual
-  if (varTempCicloStartado) {    
-    // Obtém a hora atual do RTC e Converte a string da última lubrificação para um objeto DateTime
+  if (configExiste == true && varTempCicloStartado) {
     DateTime agora = rtc.now();
     DateTime ultimaLubrificacaoDT = stringParaDateTime(varTempUltimaLubrificacao);
-
-    // Converte os tempos para Unix Timestamps (um número total de segundos)
     uint32_t agora_ts = agora.unixtime();
     uint32_t ultima_lub_ts = ultimaLubrificacaoDT.unixtime();
 
-    // Converte o intervalo de configuração (que está em milissegundos) para segundos
-    uint32_t intervalo_s = varConfigIntervalo / 1000;
+    // ***** ALTERAÇÃO CRÍTICA AQUI *****
+    // Usa o 'varConfigIntervaloTrigger_ms' (Frequência) para o gatilho
+    uint32_t intervalo_s = varConfigIntervaloTrigger_ms / 1000;
 
-      // Verifica se o tempo atual for maior ou igual ao tempo da última lubrificação + o intervalo...
-      if (agora_ts >= (ultima_lub_ts + intervalo_s)) {
-        Serial.println("\n[CICLO AUTOMÁTICO] Tempo de lubrificação atingido!");    
-        fonteDoEventoAtual = "Auto";   
+    // Verifica se o tempo de trigger foi atingido (ex: 5 dias)
+    if (agora_ts >= (ultima_lub_ts + intervalo_s)) {
+      Serial.println("\n[CICLO AUTOMÁTICO] Tempo de lubrificação atingido!");
+      fonteDoEventoAtual = "Auto";
 
-        //Modo Básico
-        if(varConfigTipoConfig==1){       
-          Serial.println("\n[CICLO AUTOMÁTICO] Realizando dosagem no modo básico"); 
-          // FALTA FAZER: COLOCAR A LÓGICA PARA DOSAR CONFORME O COMBINADO DO MODO BÁSICO
-          // Inicia o movimento do motor no sentido horário
-          iniciarMovimentoMotor(HORARIO, 1500); 
+      if (dosagemCalculada > 0) {
+        Serial.print("\n[CICLO AUTOMÁTICO] Iniciando dosagem de ");
+        Serial.print(dosagemCalculada, 3); // Imprime com 3 casas decimais
+        Serial.println(" g.");
+        iniciarMovimentoMotor(dosagemCalculada, HORARIO);
+      } else {
+        Serial.println("[ERRO] Dosagem calculada é zero. Verifique a configuração.");
+      }
 
-        //Modo Avançado
-        }else if (varConfigTipoConfig==2){ 
-          Serial.println("\n[CICLO AUTOMÁTICO] Realizando dosagem no modo avançado");
-          // FALTA FAZER: COLOCAR A LÓGICA PARA DOSAR CONFORME O COMBINADO DO MODO AVANÇADO
-          // Inicia o movimento do motor no sentido horário
-          iniciarMovimentoMotor(HORARIO, 1500); 
-        }
-
-        // Atualiza a variável da última lubrificação com a hora atual para reiniciar o timer
-        varTempUltimaLubrificacao = formatarTimestamp(agora);          
-        // Salva o novo estado no arquivo para que ele não se perca se o dispositivo reiniciar
-        salvarEstadoCiclo(true, varTempHorarioStartado, varTempUltimaLubrificacao);
-      }    
+      // Atualiza a variável da última lubrificação com a hora atual
+      varTempUltimaLubrificacao = formatarTimestamp(agora);
+      salvarEstadoCiclo(true, varTempHorarioStartado, varTempUltimaLubrificacao);
+    }
   }
   
   //----------------------------------------------------------------------------------------------------------------------------------- 
-  // Lógica para quando o motor estiver em funcionamento
+  // Lógica dos sensores quando o motor estiver em funcionamento
   //-----------------------------------------------------------------------------------------------------------------------------------
-  if (motorLigado) {
+  
+
+if (motorLigado) { // Esta flag é definida como 'true' por iniciarMovimentoMotor
+    // --- Verificações de FALHA (Sensores e Corrente) ---
     // 1. Verifica se os sensores de fim de curso foram atingidos
+
     if (motorDirecaoAtual == HORARIO && digitalRead(SEN_NIVEL_BAIXO) == LOW){
-      Serial.println("[MOTOR] Sensor de baixo nível atingido!");
-      pararMotor();
+      Serial.println("[MOTOR] FALHA: Sensor de baixo nível atingido!");
+      pararMotor(); // Para o motor via biblioteca
       registrarEvento(fonteDoEventoAtual, false); //Registra a lubrificação como falha
-    }
-    if (motorDirecaoAtual == ANTI_HORARIO && digitalRead(SEN_NIVEL_ALTO) == LOW) { 
-      Serial.println("[MOTOR] Sensor de alto nível atingido!");
-      pararMotor();
+      motorLigado = false; // Reseta a flag principal
     }
 
-    // 2. Verificação contínua do valor da corrente
-    float corrente = ina226Motor.getCurrent_mA();
-    if (corrente > CORRENTE_MAXIMA_MOTOR) {
-        Serial.println("[MOTOR] SOBRECARGA DETECTADA! Motor travado!");
-        pararMotor();
-        registrarEvento(fonteDoEventoAtual, false); // Registra o evento como falha
-    }  
+    if (motorDirecaoAtual == ANTI_HORARIO && digitalRead(SEN_NIVEL_ALTO) == LOW) {
+      Serial.println("[MOTOR] AVISO: Sensor de alto nível atingido!");
+      pararMotor(); // Para o motor via biblioteca
+      motorLigado = false; // Reseta a flag principal
+      // (Não registra evento, pois isso é um reabastecimento, não uma dosagem)
+    }
     
-    // 3. Verifica se o tempo de acionamento esgotou
-    if (millis() >= motorTempoFinal) {
-      Serial.println("[MOTOR] Tempo de acionamento esgotado.");
-      pararMotor();
-      registrarEvento(fonteDoEventoAtual, true); // Sucesso total
-    }  
+    // 2. Verificação contínua do valor da corrente (Cálculo Manual CORRIGIDO)
+    // A Lei de Ohm é I = V / R
+    // Se V está em miliVolts (mV) e R está em Ohms (Ohm), o resultado I é em miliAmperes (mA).
+    
+    float shuntV_motor_mV = ina226Motor.getShuntVoltage_mV();
+    float current_motor_mA = shuntV_motor_mV / SHUNT_MOTOR_OHMS; // (mV / Ohms = mA)
+
+    // Agora comparamos mA com mA (2000.0)
+    if (current_motor_mA > CORRENTE_MAXIMA_MOTOR) {
+      Serial.print("[MOTOR] FALHA: SOBRECARGA DETECTADA! (");
+      Serial.print(current_motor_mA);
+      Serial.println(" mA)");
+      pararMotor(); // Para o motor via biblioteca
+      registrarEvento(fonteDoEventoAtual, false); // Registra o evento como falha
+      motorLigado = false; // Reseta a flag principal
+    }
+
+    // --- Verificação de SUCESSO (Alvo de Pulsos) ---
+    if (motorLigado) // Apenas continue se ainda estiver ligado
+    {
+      MotorStatus status = Motor.atualizar(); 
+      if (status == MOTOR_ALVO_ATINGIDO) {
+        Serial.println("[MOTOR] SUCESSO: Alvo de pulsos atingido.");
+        registrarEvento(fonteDoEventoAtual, true);
+        motorLigado = false;
+      }
+    }
   }
-
-
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // Envia o json para o master
 void sendJsonViaLoRa(const String &json, uint8_t command) {
@@ -477,8 +596,9 @@ void sendJsonViaLoRa(const String &json, uint8_t command) {
 }
 
 //Lê o arquivo config.json para puxar as informações dele para a variável
-void loadInitialConfig() {
+void inicializaConfig() {
   if (SPIFFS.exists(CONFIG_FILE)) {
+    configExiste = true;
     File file = SPIFFS.open(CONFIG_FILE, "r");
     if (file) {
       Serial.println("[INIT] Arquivo de configuração encontrado. Carregando dados.");
@@ -490,6 +610,7 @@ void loadInitialConfig() {
     }
   } else {
     Serial.println("[INIT] Nenhum config encontrado.");
+    configExiste = false;
   }
 }
 
@@ -513,41 +634,53 @@ void salvarConfig(const char* json) {
     return;
   }
 
+  // Carrega os valores básicos
   if (!doc["Uuid"].isNull()) varConfigUuid = doc["Uuid"].as<String>();
   if (!doc["Tag"].isNull()) varConfigTag = doc["Tag"].as<String>();
   if (!doc["Equipamento"].isNull()) varConfigEquipamento = doc["Equipamento"].as<String>();
   if (!doc["Setor"].isNull()) varConfigSetor = doc["Setor"].as<String>();
   if (!doc["Lubrificante"].isNull()) varConfigLubrificante = doc["Lubrificante"].as<String>();
   if (!doc["TipoConfig"].isNull()) varConfigTipoConfig = doc["TipoConfig"].as<int>();
-  if (!doc["TipoIntervalo"].isNull()) varConfigTipoIntervalo = doc["TipoIntervalo"].as<int>(); // Lemos o TipoIntervalo PRIMEIRO
   if (!doc["Volume"].isNull()) varConfigVolume = doc["Volume"].as<int>();
   if (!doc["UltimaConexao"].isNull()) varConfigUltimaConexao = doc["UltimaConexao"].as<String>();
-
+  
+  // --- Bloco da DURAÇÃO TOTAL (Intervalo) ---
+  // Este bloco calcula a DURAÇÃO TOTAL (ex: 10 meses em ms)
   if (!doc["Intervalo"].isNull()) {
-    unsigned long valorIntervalo = doc["Intervalo"].as<unsigned long>();
+    varConfigValorIntervalo = doc["Intervalo"].as<unsigned long>(); // Salva o "10"
+    varConfigTipoIntervalo = doc["TipoIntervalo"].as<int>();       // Salva o "Mês"
+
     unsigned long multiplicador = 1000; // Padrão é segundos
 
-    //Converte para milisegundos
     switch (varConfigTipoIntervalo) {
-      case 1: // Hora
-        multiplicador = 3600000UL;
-        break;
-      case 2: // Dia
-        multiplicador = 86400000UL;
-        break;
-      case 3: // Mês
-        multiplicador = 2592000000UL;
-        break;
-      default: // Segundos ou None
-        multiplicador = 1000;
-        break;
+      case 1: multiplicador = 3600000UL; break; // Hora
+      case 2: multiplicador = 86400000UL; break; // Dia
+      case 3: multiplicador = 2592000000UL; break; // Mês (30 dias)
+      default: multiplicador = 1000; break;
     }
-
-    unsigned long novoIntervaloCalculado = valorIntervalo * multiplicador;
-    varConfigIntervalo = novoIntervaloCalculado; // em milisegundos 
+    // Salva a DURAÇÃO TOTAL em milissegundos
+    varConfigIntervalo = varConfigValorIntervalo * multiplicador; 
   }
 
-  // Visualização para Debug (corrigido para mostrar a variável certa)
+  // --- NOVO Bloco de FREQUÊNCIA (Trigger) ---
+  // Este bloco calcula o GATILHO (ex: 5 dias em ms)
+  if (!doc["Frequencia"].isNull()) {
+    varConfigFrequencia = doc["Frequencia"].as<unsigned long>();     // Salva o "5"
+    varConfigTipoFrequencia = doc["TipoFrequencia"].as<int>(); // Salva o "Dia"
+
+    unsigned long multiplicador = 1000; // Padrão é segundos
+
+    switch (varConfigTipoFrequencia) {
+      case 1: multiplicador = 3600000UL; break; // Hora
+      case 2: multiplicador = 86400000UL; break; // Dia
+      case 3: multiplicador = 2592000000UL; break; // Mês
+      default: multiplicador = 1000; break;
+    }
+    // Salva o INTERVALO DE TRIGGER em milissegundos
+    varConfigIntervaloTrigger_ms = varConfigFrequencia * multiplicador;
+  }
+
+  // --- Visualização para Debug (Atualizada) ---
   Serial.println("[CONFIG] Variáveis globais carregadas:");
   Serial.print("  > Uuid: "); Serial.println(varConfigUuid);
   Serial.print("  > Tag: "); Serial.println(varConfigTag);
@@ -555,8 +688,20 @@ void salvarConfig(const char* json) {
   Serial.print("  > Setor: "); Serial.println(varConfigSetor);
   Serial.print("  > Lubrificante: "); Serial.println(varConfigLubrificante);
   Serial.print("  > TipoConfig: "); Serial.println(varConfigTipoConfig);
-  Serial.print("  > TipoIntervalo: "); Serial.println(varConfigTipoIntervalo);
   Serial.print("  > Volume: "); Serial.println(varConfigVolume);
+  
+  Serial.println(" --- DURAÇÃO TOTAL ---");
+  Serial.print("  > Duração (Valor): "); Serial.println(varConfigValorIntervalo);
+  Serial.print("  > Duração (Tipo): "); Serial.println(varConfigTipoIntervalo);
+  Serial.print("  > Duração (Total ms): "); Serial.print(varConfigIntervalo); Serial.println(" ms");
+
+  Serial.println(" --- FREQUÊNCIA (TRIGGER) ---");
+  Serial.print("  > Frequência (Valor): "); Serial.println(varConfigFrequencia);
+  Serial.print("  > Frequência (Tipo): "); Serial.println(varConfigTipoFrequencia);
+  Serial.print("  > Frequência (Trigger ms): "); Serial.print(varConfigIntervaloTrigger_ms); Serial.println(" ms");
+
+
+  Serial.print("  > TipoIntervalo: "); Serial.println(varConfigTipoIntervalo);
   Serial.print("  > Intervalo: "); Serial.print(varConfigIntervalo); Serial.println(" ms"); // Mostra a variável correta
   Serial.print("  > UltimaConexao: "); Serial.println(varConfigUltimaConexao);
 }
@@ -773,9 +918,10 @@ void salvarEstadoCiclo(bool cicloStartado, const String& horarioStartado, const 
   file.close();
 }
 
-// Carrega os valores do arquivo local para as variáveis do programa
-void carregarEstadoCiclo() {
+// Carrega os valores do arquivo local temporario para as variáveis do programa
+void inicializarArquivoTemp() {
   if (SPIFFS.exists(TEMP_FILE)) {
+    configExiste = true;
     File file = SPIFFS.open(TEMP_FILE, "r");
     if (file) {
       JsonDocument doc;
@@ -833,6 +979,25 @@ DateTime stringParaDateTime(const String& timestampStr) {
   return DateTime(ano, mes, dia, hora, minuto, segundo);
 }
 
+/**
+ * @brief Converte um valor e tipo (Hora, Dia, Mês) para uma contagem total em DIAS.
+ * Usa float para precisão.
+ */
+float converterParaDias(unsigned long valor, int tipo) {
+  // public enum INTERVALTYPE {NONE, HORA, DIA, MES } Hora = 1 / Dia = 2 / Mês = 3
+  switch (tipo) {
+    case 1: // Hora
+      return (float)valor / 24.0f;
+    case 2: // Dia
+      return (float)valor;
+    case 3: // Mês
+      // Usamos uma média de 30 dias por mês para este cálculo
+      return (float)valor * 30.0f;
+    default: // NONE ou Segundos (não deveriam ser usados para rateio)
+      return (float)valor / 86400.0f; // Converte segundos para dias
+  }
+}
+
 int lerNivelBateria() {
   // getBusVoltage_V() retorna a voltagem diretamente em Volts
   float voltagem = ina226Bateria.getBusVoltage();
@@ -871,49 +1036,43 @@ float lerTemperaturaPT100() {
   return temperatura;
 }
 
-void pararMotor() {
-  // Usa o modo "freio" do L298HN para uma parada mais precisa
-  digitalWrite(MOTOR_IN1, LOW);
-  digitalWrite(MOTOR_IN2, LOW);
-  digitalWrite(MOTOR_EN, LOW);
+// ==========================================================================
+// --- FUNÇÕES DE CONTROLE DO MOTOR ---
+// ==========================================================================
 
-  motorLigado = false; // Atualiza a flag de estado
-  Serial.println("[MOTOR] Movimento interrompido.");
+/**
+ * @brief Inicia o movimento do motor com base nas gramas.
+ * Esta função agora chama a biblioteca NÃO-BLOQUEANTE.
+ */
+void iniciarMovimentoMotor(float gramas, Sentido direcao) {
+  // A flag 'motorLigado' será gerenciada pela biblioteca
+  if (Motor.estaGirando()) {
+    Serial.println("[MOTOR] Comando ignorado, motor ja em movimento.");
+    return; 
+  }
+
+  // Define a direção global para os sensores saberem
+  motorDirecaoAtual = direcao; 
+  
+  // Converte nossa enum global para a enum da biblioteca
+  Sentido sentidoLib = direcao;
+  
+  Serial.print("[MOTOR] Iniciando dosagem de ");
+  Serial.print(gramas);
+  Serial.println("g.");
+
+  // Chama a função NÃO-BLOQUEANTE da biblioteca
+  Motor.iniciarGiroPorGramas(gramas, sentidoLib, VELOCIDADE_MOTOR);
+  
+  // A flag 'motorLigado' será usada pela sua lógica de sensores
+  motorLigado = true;
 }
 
-void iniciarMovimentoMotor(DirecaoMotor direcao, int duracao_ms) {
-  Serial.print("[MOTOR] Iniciando movimento no sentido ");
-  
-  motorDirecaoAtual = direcao; // Salva a direção atual
-
-  if (direcao == HORARIO) {
-    Serial.println("HORÁRIO...");
-    digitalWrite(MOTOR_IN1, HIGH);
-    digitalWrite(MOTOR_IN2, LOW);
-  } else if (direcao == ANTI_HORARIO){
-    Serial.println("ANTI-HORÁRIO...");
-    digitalWrite(MOTOR_IN1, LOW);
-    digitalWrite(MOTOR_IN2, HIGH);
-  }
-
-  // Verifica se o sensor de NÍVEL BAIXO está acionado (em LOW)
-  if (digitalRead(SEN_NIVEL_BAIXO) == LOW) {
-    Serial.println("[MOTOR] Motor não ligou, pois o sensor de NÍVEL BAIXO está acionado.");
-  }
-  // Se o primeiro não estiver, verifica se o sensor de NÍVEL ALTO está acionado
-  else if (digitalRead(SEN_NIVEL_ALTO) == LOW) {
-    Serial.println("[MOTOR] Motor não ligou, pois o sensor de NÍVEL ALTO está acionado.");
-  }
-  // Se NENHUM dos sensores estiver acionado, então é seguro ligar o motor
-  else {
-    Serial.println("[MOTOR] Sensores livres. Ligando o motor...");
-    
-    // Habilita o motor
-    digitalWrite(MOTOR_EN, HIGH);
-    
-    // Configura as variáveis de estado para o loop gerenciar
-    motorLigado = true;
-  }
-  
-  motorTempoFinal = millis() + duracao_ms;
+/**
+ * @brief Para o motor (emergência ou fim de curso)
+ */
+void pararMotor() {
+  Serial.println("[MOTOR] Parada de emergencia/sensor acionada.");
+  Motor.pararMotor(); // Chama a função da biblioteca
+  motorLigado = false;
 }

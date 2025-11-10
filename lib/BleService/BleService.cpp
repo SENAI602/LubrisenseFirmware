@@ -27,6 +27,7 @@ class MyCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
+
 // Função para configurar o servidor BLE
 void setupBLE() {
   BLEDevice::init("LUBRICENSE_Device");

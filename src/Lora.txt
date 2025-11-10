@@ -1,3 +1,16 @@
+  // Envia o json para o master
+void sendJsonViaLoRa(const String &json, uint8_t command) {
+  Serial.print("[LORA] Enviando para Gateway - CMD: 0x");
+  Serial.print(command, HEX);
+  Serial.print(" - JSON: ");
+  Serial.println(json);
+  if (lora.PrepareFrameCommand(GATEWAY_ID, command, (uint8_t*)json.c_str(), json.length())) {
+    lora.SendPacket();
+  } else {
+    Serial.println("[ERRO] Falha ao preparar frame LoRa.");
+  }
+}
+  
   //-----------------------------------------------------------------------------------------------------------------------------------
   
 

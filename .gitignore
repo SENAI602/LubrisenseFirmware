@@ -3,3 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Arquivos de sistema (Lixo)
+.DS_Store
+Thumbs.db

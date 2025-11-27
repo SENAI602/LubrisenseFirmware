@@ -1,24 +1,24 @@
 /**
  * =========================================================================================
  * PROJETO: FIRMWARE HÍBRIDO BLINDADO - LUBRISENSE 4.0
- * PLATAFORMA: ESP32-S3 (Framework Arduino)
+ * PLATAFORMA: ESP32-S3 (Framework Arduino / PlatformIO)
+ * VERSÃO: 4.7 FINAL (TIMING SEGURO + BUFFER DE FRAGMENTAÇÃO + DOCUMENTAÇÃO)
+ * AUTOR: Equipe de Desenvolvimento Smart Factory - FREMTEC - LubriSense 4.0
  * =========================================================================================
- * * DESCRIÇÃO:
- * Firmware para controle de lubrificador automático inteligente com conectividade dupla:
- * 1. LoRaMESH (Longa Distância): Recebe comandos via Gateway e envia telemetria.
- * 2. Bluetooth LE (Local): Permite configuração e controle via App Android/iOS.
- * * DESTAQUES TÉCNICOS:
- * - Arquitetura Híbrida: LoRa e BLE funcionam simultaneamente sem bloqueio (Non-blocking Loop).
- * - LoRa Cirúrgico: Implementação de Sniffer Serial para contornar limitações da biblioteca padrão.
- * - BLE Nativo: Uso direto da stack ESP32 BLE para máxima compatibilidade e reconexão robusta.
- * - Sistema de Arquivos (SPIFFS): Persistência de configurações (JSON) e Logs (JSONL).
- * - Proteção de Hardware: Monitoramento de corrente (INA226) e Watchdog de software.
- * - Modo de Segurança: Trava de boot via botão físico para recuperar USB em caso de crash.
+ * * DESCRIÇÃO GERAL:
+ * Firmware para controle de lubrificador automático inteligente. Opera em modo híbrido,
+ * aceitando comandos de duas interfaces de comunicação simultâneas e independentes.
+ * * FUNCIONALIDADES:
+ * 1. LoRaMESH (Longa Distância): Recebe comandos de acionamento (GPIO) via Gateway e envia telemetria.
+ * 2. Bluetooth LE (Local): Permite configuração completa (JSON) e controle manual via App.
+ * 3. Controle de Motor: Acionamento de motor DC com encoder para dosagem precisa (gramas).
+ * 4. Proteção: Monitoramento de corrente (INA226) para evitar travamento/queima do motor.
+ * 5. Persistência: Salva configurações e logs de eventos na memória Flash (SPIFFS).
  * * PINAGEM CRÍTICA (ESP32-S3):
- * [LoRa]   TX: GPIO 43 | RX: GPIO 44
+ * [LoRa]   TX: GPIO 43 | RX: GPIO 44 (UART 2)
  * [Motor]  EN: 38 | IN1: 21 | IN2: 18 | Encoder A: 15 | Encoder B: 16
  * [I/O]    LED Status: 7 | Botão Manual: 2 | Nível Baixo: 5 | Nível Alto: 6
- * [I2C]    SDA: 11 | SCL: 10 (INA226, RTC DS3231)
+ * [I2C]    SDA: 11 | SCL: 10 (Sensores e RTC)
  * [Analog] PT100: 1
  * * =========================================================================================
  */
@@ -28,16 +28,16 @@
 // --------------------------------------------------------------------------
 #include <Arduino.h>
 #include <vector>
-#include <WiFi.h>          // Apenas para NTP (Relógio)
-#include <Wire.h>          // I2C
-#include <SPIFFS.h>        // Armazenamento Flash
-#include <ArduinoJson.h>   // Parser JSON
-#include "RTClib.h"        // RTC DS3231
-#include <INA226.h>        // Sensor de Corrente
-#include <MotorEncoder.h>  // Controle PID/Pulsos do Motor
-#include "LoRaMESH.h"      // Rádio (Apenas envio/configuração)
+#include <WiFi.h>          // Utilizado apenas para sincronização NTP no boot (se necessário)
+#include <Wire.h>          // Comunicação I2C
+#include <SPIFFS.h>        // Sistema de Arquivos (Config/Logs)
+#include <ArduinoJson.h>   // Manipulação de dados JSON
+#include "RTClib.h"        // Relógio de Tempo Real (DS3231)
+#include <INA226.h>        // Sensor de Tensão e Corrente
+#include <MotorEncoder.h>  // Biblioteca Local: Controle PID/Pulsos do Motor
+#include "LoRaMESH.h"      // Biblioteca Local: Rádio (Apenas envio/configuração)
 
-// BLE Nativo (Estabilidade e Compatibilidade)
+// Bibliotecas Nativas do ESP32 para Bluetooth (Estabilidade e Compatibilidade)
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -46,97 +46,99 @@
 // --------------------------------------------------------------------------
 // 2. DEFINIÇÕES DE HARDWARE (PINOUT)
 // --------------------------------------------------------------------------
+// Interface LoRa (Validado na PCI v4.0)
 #define LORA_TX_PIN         43  
 #define LORA_RX_PIN         44  
 
-#define LED_PIN_GPIO7       7   // Feedback Visual
-#define SEN_NIVEL_BAIXO     5   // Sensor Fim de Curso (Vazio)
-#define SEN_NIVEL_ALTO      6   // Sensor Fim de Curso (Cheio)
-#define BTN_MANUAL          2   // Botão de Ação / Modo Segurança
+// Interface de Usuário e Sensores Digitais
+#define LED_PIN_GPIO7       7   // LED de Status (Feedback Visual)
+#define SEN_NIVEL_BAIXO     5   // Sensor de Fim de Curso (Reservatório Vazio)
+#define SEN_NIVEL_ALTO      6   // Sensor de Fim de Curso (Reservatório Cheio)
+#define BTN_MANUAL          2   // Botão de Ação Manual e Modo de Segurança
 
-// Driver Motor (Ponte H)
+// Driver de Motor (Ponte H e Encoder)
 #define MOTOR_IN1           21  
 #define MOTOR_IN2           18  
 #define MOTOR_EN            38  
 #define ENCODER_PIN_A       15  
 #define ENCODER_PIN_B       16  
 
-// Barramentos
+// Barramentos de Comunicação
 #define I2C_SDA             11  
 #define I2C_SCL             10  
-#define PT100_PIN           1   
+#define PT100_PIN           1   // Entrada Analógica (Temperatura)
 
 // --------------------------------------------------------------------------
-// 3. CONSTANTES E PARÂMETROS
+// 3. CONSTANTES E PARÂMETROS GLOBAIS
 // --------------------------------------------------------------------------
-// Identidade Bluetooth (Deve coincidir com o App)
+// Identidade Bluetooth (Devem coincidir com o App Mobile)
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHAR_UUID           "1c95d5e3-d8f7-413a-bf3d-7a2e5d7be87e"
 
-// Wi-Fi (Apenas para NTP no boot)
+// Configuração Wi-Fi (Apenas para NTP)
 const char* ssid = "smartfactory";      
 const char* password = "smartfactory"; 
 const char* ntpServer = "a.st1.ntp.br";
 const long  gmtOffset_sec = -3 * 3600; // GMT-3 (Brasil)
 const int   daylightOffset_sec = 0;
 
-// Sistema de Arquivos
-#define CONFIG_FILE "/config.json" 
-#define LOG_FILE    "/log.jsonl"   
-#define TEMP_FILE   "/temp.json"   
+// Nomes dos Arquivos no Sistema SPIFFS
+#define CONFIG_FILE "/config.json" // Configurações de operação
+#define LOG_FILE    "/log.jsonl"   // Histórico de eventos
+#define TEMP_FILE   "/temp.json"   // Estado temporário (recuperação de falha)
 
-// LoRa e Rede
+// Parâmetros de Rede LoRa
 #define GATEWAY_ID 0 
 #define CMD_TO_GATEWAY_EVENT   0x20 
 const size_t limiteLinhasLog = 10;
-const unsigned long intervaloEnviarGateway = 30000; // 30s
-const unsigned long TIMEOUT_ACK = 15000;
+const unsigned long intervaloEnviarGateway = 30000; // Intervalo de reenvio de logs (30s)
+const unsigned long TIMEOUT_ACK = 15000;            // Tempo limite para ACK do Gateway
 
-// Proteção do Motor
-const float CORRENTE_MAXIMA_MOTOR = 2000.0; // mA
-const float SHUNT_MOTOR_OHMS = 0.02;        
-const int VELOCIDADE_MOTOR = 60;            // PWM
-const long PULSOS_PARA_UMA_VOLTA = 5650;    
-const float GRAMAS_POR_VOLTA = 2.21;        
+// Parâmetros de Proteção e Calibração do Motor
+const float CORRENTE_MAXIMA_MOTOR = 2000.0; // Limite de corrente em mA (Proteção)
+const float SHUNT_MOTOR_OHMS = 0.02;        // Resistor Shunt da placa
+const int VELOCIDADE_MOTOR = 60;            // Velocidade PWM (0-255)
+const long PULSOS_PARA_UMA_VOLTA = 5650;    // Calibração: Pulsos por volta completa
+const float GRAMAS_POR_VOLTA = 2.21;        // Calibração: Gramas dispensadas por volta
 
-// Sensores
+// Parâmetros de Sensores
 const float TEMP_MIN = 0.0;       
 const float TEMP_MAX = 150.0;
 #define FATOR_CONVERSAO_PT100 100.0 
 #define NUM_AMOSTRAS_ADC 20  
 
 // --------------------------------------------------------------------------
-// 4. OBJETOS GLOBAIS E VARIÁVEIS DE ESTADO
+// 4. OBJETOS E VARIÁVEIS DE ESTADO
 // --------------------------------------------------------------------------
-// Comunicação
+// Interfaces de Comunicação
 HardwareSerial LoRaSerial(2); 
 LoRaMESH lora(&LoRaSerial);   
 BLEServer* pServer = NULL;
 BLECharacteristic* pCharacteristic = NULL;
 
-// Hardware
+// Periféricos de Hardware
 RTC_DS3231 rtc;               
 INA226 ina226Bateria(0x40);   
 INA226 ina226Motor(0x41);     
 MotorEncoder Motor(ENCODER_PIN_A, ENCODER_PIN_B, MOTOR_EN, MOTOR_IN1, MOTOR_IN2);
 
-// Controle de Estado BLE
+// Estado do Bluetooth (Buffer para remontagem de pacotes)
 bool deviceConnected = false;      
 bool oldDeviceConnected = false;   
-String bleComandoRecebido = "";    
-volatile bool bleTemDados = false; 
+String bleBuffer = "";             // Acumula fragmentos de JSON (Bufferização)
+bool bleJsonCompleto = false;      // Flag: Indica que um JSON completo chegou
 volatile bool estadoLedAtual = false; 
-bool precisaNotificarApp = false;  
+bool precisaNotificarApp = false;  // Flag: Indica necessidade de atualizar o App
 
-// Controle de Estado LoRa
+// Estado do LoRa
 unsigned long ultimoReenvio = 0;
 bool aguardandoAck = false;
 unsigned long aguardandoAckDesde = 0;
 unsigned long ultimaSincronizacao = 0; 
 
-// Configuração (Carregada do JSON)
+// Variáveis de Configuração (Carregadas do JSON)
 String varConfigUuid = "";
-int    varConfigTipoConfig = 0; // 1=Básico, 2=Avançado
+int    varConfigTipoConfig = 0;       // 1=Básico, 2=Avançado
 int    varConfigVolume = 10;          
 unsigned long varConfigIntervaloTrigger_ms = 0; 
 unsigned long varConfigIntervalo = 0; 
@@ -146,7 +148,7 @@ int varConfigFrequencia = 0;
 int varConfigTipoFrequencia = 0;
 bool configExiste = false;
 
-// Estado do Sistema
+// Estado do Sistema (Lógica de Negócio)
 bool isClockValid = false;
 bool varTempCicloStartado = false;
 String varTempHorarioStartado = "";
@@ -155,7 +157,7 @@ bool motorLigado = false;
 Sentido motorDirecaoAtual = HORARIO;
 String fonteDoEventoAtual = "Nenhum";
 
-// Botão Manual
+// Controle do Botão Manual
 int estadoAnteriorBtnManual = HIGH;
 unsigned long ultimoAcionamentoBotaoManual = 0;
 const unsigned long intervaloBloqueio = 5000; 
@@ -163,6 +165,7 @@ const unsigned long intervaloBloqueio = 5000;
 // --------------------------------------------------------------------------
 // 5. PROTÓTIPOS DE FUNÇÕES
 // --------------------------------------------------------------------------
+// (Declaração antecipada para organização do código)
 void salvarConfig(const char* json);
 void inicializaConfig();
 void inicializarArquivoTemp();
@@ -182,10 +185,13 @@ void sendJsonViaLoRa(const String &json, uint8_t command);
 void updateBLE(const String& value);
 
 // ==========================================================================
-// 6. IMPLEMENTAÇÃO DO BLUETOOTH (CALLBACKS)
+// 6. IMPLEMENTAÇÃO DO BLUETOOTH (CALLBACKS INTELIGENTES)
 // ==========================================================================
 
-// Gerencia conexão/desconexão
+/**
+ * Gerencia eventos de conexão e desconexão do Bluetooth.
+ * Garante reinício rápido do anúncio para reconexão automática.
+ */
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
       deviceConnected = true;
@@ -195,32 +201,60 @@ class MyServerCallbacks: public BLEServerCallbacks {
     void onDisconnect(BLEServer* pServer) {
       deviceConnected = false;
       Serial.println(">> [BLE] DESCONECTADO. Reiniciando Anuncio...");
-      pServer->startAdvertising(); // Reinício imediato para reconexão rápida
+      // Reinício imediato para evitar que o dispositivo fique invisível
+      pServer->startAdvertising(); 
     }
 };
 
-// Gerencia escrita de dados pelo celular
+/**
+ * Gerencia a recepção de dados do celular.
+ * Implementa um BUFFER para remontar pacotes JSON fragmentados.
+ * Isso resolve o problema de pacotes grandes sendo cortados pelo Android.
+ */
 class MyCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
       std::string value = pCharacteristic->getValue();
-      String rxValue = String(value.c_str());
+      
+      if (value.length() > 0) {
+        String chunk = String(value.c_str());
 
-      if (rxValue.length() > 0) {
-        bleComandoRecebido = rxValue;
-        bleTemDados = true; // Sinaliza ao loop principal
+        // CASO 1: Comando Curto (Controle de LED)
+        // Processa imediatamente sem bufferizar
+        if (chunk == "1" || chunk == "0") {
+             bleBuffer = chunk;
+             bleJsonCompleto = true;
+             return;
+        }
+
+        // CASO 2: JSON Longo (Configuração)
+        // O Android pode dividir o JSON em pacotes de 20 a 512 bytes.
+        // Acumulamos até encontrar o caractere de fim '}'.
+        bleBuffer += chunk;
+
+        String temp = bleBuffer;
+        temp.trim();
+        if (temp.endsWith("}")) {
+            bleJsonCompleto = true; // Sinaliza ao loop que o pacote está pronto
+        }
       }
     }
 };
 
-// Inicialização do Stack BLE
+/**
+ * Inicializa a pilha Bluetooth Low Energy.
+ * Configura o nome do dispositivo, serviço e características.
+ */
 void setupBLE() {
-  BLEDevice::init("LUBRICENSE_Device"); // Nome visível no scan
+  // Nome visível no Scan do App (Deve coincidir com o filtro do C#)
+  BLEDevice::init("LUBRISENSE_Device"); 
   
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
   BLEService *pService = pServer->createService(SERVICE_UUID);
 
+  // Cria uma característica unificada para Leitura, Escrita e Notificação
+  // Adicionado suporte a descritores para permitir notificações Android
   pCharacteristic = pService->createCharacteristic(
                       CHAR_UUID,
                       BLECharacteristic::PROPERTY_READ | 
@@ -233,7 +267,7 @@ void setupBLE() {
 
   pService->start();
   
-  // Configuração de Advertising para melhor compatibilidade Android/iOS
+  // Configuração de Advertising (Anúncio) para melhor compatibilidade
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setScanResponse(true);
@@ -242,7 +276,7 @@ void setupBLE() {
   
   BLEDevice::startAdvertising();
   
-  Serial.println(">> [BLE] PRONTO E VISÍVEL (LUBRICENSE_Device)");
+  Serial.println(">> [BLE] PRONTO E VISÍVEL (LUBRISENSE_Device)");
 }
 
 // ==========================================================================
@@ -250,7 +284,8 @@ void setupBLE() {
 // ==========================================================================
 /**
  * Lê o buffer serial byte a byte procurando pelo padrão de comando GPIO (0xC2).
- * Resolve o problema de travamento da biblioteca oficial em loops rápidos.
+ * Esta abordagem manual resolve o problema de travamento da biblioteca oficial
+ * em loops de alta velocidade.
  */
 void verificarLoRaCirurgico() {
   if (LoRaSerial.available() > 0) {
@@ -259,16 +294,16 @@ void verificarLoRaCirurgico() {
     
     uint8_t byteLido = LoRaSerial.read();
 
-    // Sincronia: Espera cabeçalho ID 1
+    // 1. Sincronia: Espera cabeçalho ID 1 (Gateway)
     if (index == 0 && byteLido != 0x01) return; 
 
     buffer[index++] = byteLido;
 
-    // Tamanho do pacote de comando = 9 bytes
+    // 2. Tamanho do pacote de comando = 9 bytes
     if (index >= 9) {
-      // Byte 2 = Comando (0xC2 = GPIO)
+      // 3. Assinatura: O 3º byte (índice 2) deve ser o comando 0xC2 (GPIO)
       if (buffer[2] == 0xC2) {
-         // Byte 6 = Nível Lógico (1=High, 0=Low)
+         // 4. O Dado: O nível (Ligar/Desligar) está no 7º byte (índice 6)
          uint8_t nivel = buffer[6]; 
          
          Serial.printf("[LORA] Comando Recebido! Nivel: %d\n", nivel);
@@ -282,32 +317,29 @@ void verificarLoRaCirurgico() {
              estadoLedAtual = false; 
          }
          
-         // Solicita notificação ao App (Processado no Loop)
+         // Solicita notificação ao App (Processado no Loop Principal)
          precisaNotificarApp = true;
       }
-      index = 0; 
+      index = 0; // Reseta buffer
     }
   }
 }
 
 // ==========================================================================
-// 8. SETUP (INICIALIZAÇÃO)
+// 8. SETUP (INICIALIZAÇÃO DO SISTEMA)
 // ==========================================================================
 void setup() {
   Serial.begin(115200);
   
-  // Configura botão manual primeiro para permitir Modo de Segurança
+  // Trava de Segurança: Segure o botão manual no boot para modo de recuperação
   pinMode(BTN_MANUAL, INPUT_PULLUP);
-
-  // --- TRAVA DE SEGURANÇA (RECUPERAÇÃO DE USB) ---
-  // Se ligar segurando o botão, entra em loop infinito seguro
   if (digitalRead(BTN_MANUAL) == LOW) {
       Serial.println("\n!!! MODO DE SEGURANÇA ATIVADO !!!");
-      Serial.println("Codigo principal cancelado. USB ativa para upload.");
+      Serial.println("USB Ativa. Código principal cancelado.");
       while(1) { delay(100); }
   }
   
-  delay(100); // Estabilização
+  delay(100); // Estabilização elétrica
 
   // Configuração de Pinos
   pinMode(SEN_NIVEL_BAIXO, INPUT);
@@ -317,37 +349,37 @@ void setup() {
   pinMode(MOTOR_EN, OUTPUT);
   pinMode(LED_PIN_GPIO7, OUTPUT);
 
-  // Estado Inicial
+  // Estado Inicial Seguro (Tudo Desligado)
   digitalWrite(MOTOR_EN, LOW);
   digitalWrite(MOTOR_IN1, LOW);
   digitalWrite(MOTOR_IN2, LOW);
   digitalWrite(LED_PIN_GPIO7, LOW);
 
-  // Correção ADC ESP32-S3
+  // Correção de atenuação do ADC no ESP32-S3 (Para leitura correta do PT100)
   if (PT100_PIN >= 0) analogSetAttenuation(ADC_11db);
 
   // Inicialização I2C e RTC
   Wire.begin(I2C_SDA, I2C_SCL);
   if (!rtc.begin()) Serial.println("[ERRO] RTC não encontrado");
   
-  // Recuperação de Hora via NTP se necessário
+  // Recuperação de Hora via NTP se bateria acabou
   if (rtc.lostPower()) {
     Serial.println("RTC sem hora. Tentando sincronizar via Wi-Fi...");
     if (sincronizarViaNTP()) ultimaSincronizacao = millis();
   }
   
-  // Validação de Relógio
+  // Validação de Relógio (Ano base 2024)
   DateTime agora = rtc.now();
   if (agora.year() < 2024) isClockValid = false;
   else isClockValid = true;
 
-  // Inicialização SPIFFS
+  // Inicialização SPIFFS (Memória Flash)
   if (!SPIFFS.begin(true)) Serial.println("[ERRO] SPIFFS falhou");
   else Serial.println("[OK] Sistema de Arquivos montado");
   
   inicializaConfig();
   
-  // Configuração de Fábrica (Se novo)
+  // Configuração Padrão de Fábrica
   if (!configExiste) {
     Serial.println("[INIT] Criando configuração de fábrica...");
     const char* def = "{\"Uuid\":\"novo-uuid\",\"Tag\":\"PONTO-01\",\"Equipamento\":\"MOTOR\",\"TipoConfig\":1,\"Volume\":10,\"Intervalo\":1,\"TipoIntervalo\":3,\"Frequencia\":1,\"TipoFrequencia\":2}";
@@ -357,11 +389,11 @@ void setup() {
 
   inicializarArquivoTemp();
 
-  // Inicialização LoRa (Apenas TX configurado via Lib)
+  // Inicialização LoRa
   LoRaSerial.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
   lora.begin(false); 
   
-  // Força ID Mestre
+  // Força ID Mestre (0) para receber comandos do Gateway
   if(lora.localId != 0) {
       lora.setnetworkId(0);
       lora.setpassword(602);
@@ -373,7 +405,7 @@ void setup() {
   ina226Motor.setAverage(128); 
   Motor.begin(PULSOS_PARA_UMA_VOLTA, GRAMAS_POR_VOLTA);
 
-  // Inicialização BLE com Delay de Segurança
+  // Inicialização BLE (com atraso de segurança)
   Serial.println("Iniciando BLE em 2s...");
   delay(2000);
   setupBLE();
@@ -387,37 +419,53 @@ void setup() {
 // ==========================================================================
 void loop() {
   
-  // --- TAREFA 1: VERIFICAR RÁDIO LORA ---
+  // --- TAREFA 1: VERIFICAR RÁDIO LORA (Polling Rápido) ---
   verificarLoRaCirurgico();
 
-  // --- TAREFA 2: DIAGNÓSTICO SERIAL (PC) ---
+  // --- TAREFA 2: DIAGNÓSTICO SERIAL (Comandos PC) ---
   if (Serial.available() > 0) {
     char command = Serial.read();
-    while(Serial.available() > 0 && (Serial.peek() == '\n' || Serial.peek() == '\r')) {
-        Serial.read(); // Limpa buffer
-    }
-
-    if (command == 'c' || command == 'C') displayFileContent(CONFIG_FILE);
-    else if (command == 'l' || command == 'L') displayFileContent(LOG_FILE);
-    else if (command == 't' || command == 'T') displayFileContent(TEMP_FILE);
+    while(Serial.available() > 0) Serial.read(); // Limpeza buffer
+    if (command == 'c') displayFileContent(CONFIG_FILE);
+    if (command == 'l') displayFileContent(LOG_FILE);
+    if (command == 't') displayFileContent(TEMP_FILE);
   }
 
-  // --- TAREFA 3: PROCESSAR COMANDOS BLUETOOTH ---
-  if (bleTemDados) {
-      bleTemDados = false; 
-      Serial.print("[BLE] Recebido: ");
-      Serial.println(bleComandoRecebido);
+  // --- TAREFA 3: PROCESSAR COMANDOS BLUETOOTH (BUFFERIZADO) ---
+  // Processa apenas quando o JSON completo estiver no buffer
+  if (bleJsonCompleto) {
+      bleJsonCompleto = false; // Reseta flag
+      String msg = bleBuffer;  // Copia conteúdo
+      bleBuffer = "";          // Limpa buffer
 
-      if (bleComandoRecebido.startsWith("{")) {
-          salvarConfig(bleComandoRecebido.c_str());
+      Serial.print("[BLE] Mensagem Completa: ");
+      Serial.println(msg);
+
+      if (msg.startsWith("{")) {
+          // --- CORREÇÃO CRÍTICA DE TIMING (v4.5) ---
+          
+          // 1. Pequeno delay para estabilizar o Android (sair do Write)
+          delay(100);
+
+          // 2. Envia ACK PRIMEIRO para o celular saber que recebemos
+          // Isso evita o Timeout ("Falso Erro") no App
           updateBLE("OK: Config Salva");
+          Serial.println("[BLE] Ack enviado. Gravando...");
+          
+          // 3. DELAY EXTENDIDO (500ms): Garante que o rádio transmita
+          // o OK pelo ar antes que a gravação na Flash trave o chip.
+          delay(500); 
+          
+          // 4. Agora sim, salva na Flash (Operação Lenta)
+          Serial.println("[BLE] Gravando na Flash...");
+          salvarConfig(msg.c_str());
       }
-      else if (bleComandoRecebido == "1") {
+      else if (msg == "1") {
           digitalWrite(LED_PIN_GPIO7, HIGH);
           estadoLedAtual = true;
           updateBLE("1"); 
       }
-      else if (bleComandoRecebido == "0") {
+      else if (msg == "0") {
           digitalWrite(LED_PIN_GPIO7, LOW);
           estadoLedAtual = false;
           updateBLE("0"); 
@@ -433,78 +481,76 @@ void loop() {
       }
   }
 
-  // --- TAREFA 5: LÓGICA DE NEGÓCIO AUTOMÁTICA ---
-  if (!isClockValid) return;
-
-  // 5.1 Cálculo de Dose
-  float doseCalculada = 0.0f;
-  if (configExiste) {
-    if (varConfigTipoConfig == 2) {
-      doseCalculada = (float)varConfigVolume;
-    }
-    else if (varConfigTipoConfig == 1) { 
-      float diasTotal = converterParaDias(varConfigValorIntervalo, varConfigTipoIntervalo);
-      float diasFreq = converterParaDias(varConfigFrequencia, varConfigTipoFrequencia);
-      if (diasFreq > 0) {
-        float numDoses = diasTotal / diasFreq;
-        if (numDoses > 0) doseCalculada = (float)varConfigVolume / numDoses;
+  // --- TAREFA 5: LÓGICA DE NEGÓCIO AUTOMÁTICA (DOSAGEM) ---
+  if (isClockValid) {
+      // Lógica de Dosagem e Motor (Resumida)
+      float doseCalculada = 0.0f;
+      if (configExiste) {
+        if (varConfigTipoConfig == 2) doseCalculada = (float)varConfigVolume;
+        else if (varConfigTipoConfig == 1) { 
+             float diasTotal = converterParaDias(varConfigValorIntervalo, varConfigTipoIntervalo);
+             float diasFreq = converterParaDias(varConfigFrequencia, varConfigTipoFrequencia);
+             if (diasFreq > 0) {
+                float numDoses = diasTotal / diasFreq;
+                if (numDoses > 0) doseCalculada = (float)varConfigVolume / numDoses;
+             }
+        } 
       }
-    } 
-  }
 
-  // 5.2 Botão Manual
-  int btn = digitalRead(BTN_MANUAL);
-  if (configExiste && btn == LOW && estadoAnteriorBtnManual == HIGH && (millis() - ultimoAcionamentoBotaoManual > intervaloBloqueio)){
-    Serial.println("[MANUAL] Ciclo Iniciado via Botão");
-    fonteDoEventoAtual = "Manual";
-    if (doseCalculada > 0) iniciarMovimentoMotor(doseCalculada, HORARIO);
-    ultimoAcionamentoBotaoManual = millis();
-    salvarEstadoCiclo(true, formatarTimestamp(rtc.now()), formatarTimestamp(rtc.now()));
-  }
-  estadoAnteriorBtnManual = btn;
+      // Acionamento Manual
+      int btn = digitalRead(BTN_MANUAL);
+      if (configExiste && btn == LOW && estadoAnteriorBtnManual == HIGH && (millis() - ultimoAcionamentoBotaoManual > intervaloBloqueio)){
+        Serial.println("[MANUAL] Ciclo Iniciado via Botão");
+        fonteDoEventoAtual = "Manual";
+        if (doseCalculada > 0) iniciarMovimentoMotor(doseCalculada, HORARIO);
+        ultimoAcionamentoBotaoManual = millis();
+        salvarEstadoCiclo(true, formatarTimestamp(rtc.now()), formatarTimestamp(rtc.now()));
+      }
+      estadoAnteriorBtnManual = btn;
 
-  // 5.3 Ciclo Automático (Relógio)
-  if (configExiste && varTempCicloStartado) {
-    DateTime agora = rtc.now();
-    DateTime ultima = stringParaDateTime(varTempUltimaLubrificacao);
-    
-    if (agora.unixtime() >= (ultima.unixtime() + (varConfigIntervaloTrigger_ms/1000))) {
-      Serial.println("[AUTO] Hora de Lubrificar!");
-      fonteDoEventoAtual = "Auto";
-      if (doseCalculada > 0) iniciarMovimentoMotor(doseCalculada, HORARIO);
-      varTempUltimaLubrificacao = formatarTimestamp(agora);
-      salvarEstadoCiclo(true, varTempHorarioStartado, varTempUltimaLubrificacao);
-    }
-  }
+      // Acionamento Automático
+      if (configExiste && varTempCicloStartado) {
+        DateTime agora = rtc.now();
+        DateTime ultima = stringParaDateTime(varTempUltimaLubrificacao);
+        
+        if (agora.unixtime() >= (ultima.unixtime() + (varConfigIntervaloTrigger_ms/1000))) {
+          Serial.println("[AUTO] Hora de Lubrificar!");
+          fonteDoEventoAtual = "Auto";
+          if (doseCalculada > 0) iniciarMovimentoMotor(doseCalculada, HORARIO);
+          varTempUltimaLubrificacao = formatarTimestamp(agora);
+          salvarEstadoCiclo(true, varTempHorarioStartado, varTempUltimaLubrificacao);
+        }
+      }
 
-  // 5.4 Gerenciamento do Motor (Proteções)
-  if (motorLigado) {
-    float correnteMotor = (ina226Motor.getShuntVoltage_mV() / SHUNT_MOTOR_OHMS);
-    if (correnteMotor > CORRENTE_MAXIMA_MOTOR) {
-      Serial.println("[MOTOR] ERRO: Sobrecorrente!");
-      pararMotor();
-      registrarEvento(fonteDoEventoAtual, false);
-    }
-    if (motorDirecaoAtual == HORARIO && digitalRead(SEN_NIVEL_BAIXO) == LOW) {
-       Serial.println("[MOTOR] ERRO: Nível Baixo!");
-       pararMotor();
-       registrarEvento(fonteDoEventoAtual, false);
-    }
-    if (Motor.atualizar() == MOTOR_ALVO_ATINGIDO) {
-      Serial.println("[MOTOR] Dosagem concluída.");
-      registrarEvento(fonteDoEventoAtual, true);
-      motorLigado = false;
-    }
+      // Controle do Motor
+      if (motorLigado) {
+        float correnteMotor = (ina226Motor.getShuntVoltage_mV() / SHUNT_MOTOR_OHMS);
+        if (correnteMotor > CORRENTE_MAXIMA_MOTOR) {
+          Serial.println("[MOTOR] ERRO: Sobrecorrente!");
+          pararMotor();
+          registrarEvento(fonteDoEventoAtual, false);
+        }
+        if (motorDirecaoAtual == HORARIO && digitalRead(SEN_NIVEL_BAIXO) == LOW) {
+           Serial.println("[MOTOR] ERRO: Nível de graxa baixo!");
+           pararMotor();
+           registrarEvento(fonteDoEventoAtual, false);
+        }
+        if (Motor.atualizar() == MOTOR_ALVO_ATINGIDO) {
+          Serial.println("[MOTOR] Dosagem concluída.");
+          registrarEvento(fonteDoEventoAtual, true);
+          motorLigado = false;
+        }
+      }
   }
 
   // --- TAREFA 6: MANUTENÇÃO ---
-  // Reenvio LoRa
+  // Reenvio de Logs LoRa
   if (millis() - ultimoReenvio > intervaloEnviarGateway) {
     ultimoReenvio = millis();
     if (isClockValid && !aguardandoAck) tentarReenvio();
   }
 
-  // Reconexão BLE
+  // Reconexão BLE Automática
   if (!deviceConnected && oldDeviceConnected) {
       delay(500); 
       pServer->startAdvertising(); 
@@ -519,7 +565,7 @@ void loop() {
 }
 
 // ==========================================================================
-// 10. FUNÇÕES AUXILIARES
+// 10. IMPLEMENTAÇÃO DAS FUNÇÕES AUXILIARES
 // ==========================================================================
 
 void updateBLE(const String& value) {
@@ -555,30 +601,41 @@ void salvarConfig(const char* json) {
   if (f) {
     f.print(json);
     f.close();
+    Serial.println("[CONFIG] Arquivo salvo na Flash."); 
     JsonDocument doc;
     deserializeJson(doc, json);
-    if (!doc["Volume"].isNull()) varConfigVolume = doc["Volume"].as<int>();
-    if (!doc["Intervalo"].isNull()) {
-        varConfigValorIntervalo = doc["Intervalo"].as<unsigned long>();
-        varConfigTipoIntervalo = doc["TipoIntervalo"].as<int>();
-        unsigned long mult = 1000;
-        if(varConfigTipoIntervalo == 2) mult = 86400000UL; 
-        else if(varConfigTipoIntervalo == 3) mult = 2592000000UL; 
-        else if(varConfigTipoIntervalo == 1) mult = 3600000UL; 
-        varConfigIntervalo = varConfigValorIntervalo * mult;
+    if (!doc["payload"].isNull()) { 
+        JsonObject payload = doc["payload"];
+        if (!payload["Volume"].isNull()) varConfigVolume = payload["Volume"].as<int>();
+        
+        if (!payload["Intervalo"].isNull()) {
+             varConfigValorIntervalo = payload["Intervalo"].as<unsigned long>();
+             varConfigTipoIntervalo = payload["TipoIntervalo"].as<int>();
+             unsigned long mult = 1000;
+             if(varConfigTipoIntervalo == 2) mult = 86400000UL; 
+             else if(varConfigTipoIntervalo == 3) mult = 2592000000UL; 
+             else if(varConfigTipoIntervalo == 1) mult = 3600000UL; 
+             varConfigIntervalo = varConfigValorIntervalo * mult;
+        }
+        if (!payload["Frequencia"].isNull()) {
+             varConfigFrequencia = payload["Frequencia"].as<unsigned long>();
+             varConfigTipoFrequencia = payload["TipoFrequencia"].as<int>();
+             unsigned long mult = 1000;
+             if(varConfigTipoFrequencia == 2) mult = 86400000UL;
+             else if(varConfigTipoFrequencia == 3) mult = 2592000000UL;
+             else if(varConfigTipoFrequencia == 1) mult = 3600000UL;
+             varConfigIntervaloTrigger_ms = varConfigFrequencia * mult;
+        }
+    } 
+    else if (!doc["Volume"].isNull()) {
+         varConfigVolume = doc["Volume"].as<int>();
     }
-    if (!doc["Frequencia"].isNull()) {
-        varConfigFrequencia = doc["Frequencia"].as<unsigned long>();
-        varConfigTipoFrequencia = doc["TipoFrequencia"].as<int>();
-        unsigned long mult = 1000;
-        if(varConfigTipoFrequencia == 2) mult = 86400000UL;
-        else if(varConfigTipoFrequencia == 3) mult = 2592000000UL;
-        else if(varConfigTipoFrequencia == 1) mult = 3600000UL;
-        varConfigIntervaloTrigger_ms = varConfigFrequencia * mult;
-    }
+  } else {
+      Serial.println("[ERRO] Falha ao gravar Config!");
   }
 }
 
+// Funções auxiliares mantidas
 void registrarEvento(const String& fonte, bool sucesso) {
   std::vector<String> lines;
   File readFile = SPIFFS.open(LOG_FILE, "r");
@@ -590,7 +647,6 @@ void registrarEvento(const String& fonte, bool sucesso) {
     readFile.close();
   }
   while (lines.size() >= limiteLinhasLog) lines.erase(lines.begin());
-
   JsonDocument doc;
   doc["Hora"] = formatarTimestamp(rtc.now());
   doc["Sucesso"] = sucesso;
@@ -598,11 +654,9 @@ void registrarEvento(const String& fonte, bool sucesso) {
   doc["Temperatura"] = lerTemperaturaPT100();
   doc["Bateria"] = lerNivelBateria();
   doc["e"] = false; 
-  
   String newLogLine;
   serializeJson(doc, newLogLine);
   lines.push_back(newLogLine);
-
   File writeFile = SPIFFS.open(LOG_FILE, "w");
   if (writeFile) {
     for (const auto& line : lines) writeFile.println(line);
@@ -671,7 +725,6 @@ void salvarEstadoCiclo(bool cicloStartado, const String& horarioStartado, const 
   varTempCicloStartado = cicloStartado;
   varTempHorarioStartado = horarioStartado;
   varTempUltimaLubrificacao = ultimaLubrificacao;
-  
   File file = SPIFFS.open(TEMP_FILE, "w");
   if (file) {
       serializeJson(doc, file);
